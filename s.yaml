@@ -2,6 +2,11 @@
 # Serverless Devs 配置文件 (s.yaml)  — edition 3.0.0
 # 文档: https://docs.serverless-devs.com/user-guide/spec/
 # ============================================================
+# 使用前修改:
+#   vars.region     → 函数所在区域
+#   vars.serviceName → 服务名称
+#   resources 中的 functionName → 函数名称
+# ============================================================
 
 edition: 3.0.0
 name: gzhlaker-fc
@@ -9,40 +14,70 @@ access: default
 
 vars:
   region: cn-hongkong
+  serviceName: paper-service
+  serviceDesc: 论文自动处理系统
 
 resources:
-  paper-processor:
-    component: fc3
+  paper-processor:                        # 资源名称
+    component: fc3                        # 函数计算 3.0 组件
     props:
       region: ${vars.region}
-      functionName: gzhlaker-processor
+      serviceName: ${vars.serviceName}
+      description: ${vars.serviceDesc}
+      functionName: gzhlaker-processor    # 函数名称
       description: 下载/总结/发送论文
       runtime: python3.10
       handler: main.handler
       code: ./
-      memorySize: 512
-      timeout: 600
+      memorySize: 512                     # 内存 MB
+      timeout: 600                        # 超时秒数
       environmentVariables:
-        # ---- OSS ----
+        # ---- OSS 配置 ----
         OSS_ACCESS_KEY: ""
         OSS_SECRET_KEY: ""
         OSS_BUCKET_NAME: gzhlaker-papers
         OSS_ENDPOINT_INTERNAL: oss-cn-hongkong-internal.aliyuncs.com
         OSS_ENDPOINT_ACCELERATE: oss-accelerate.aliyuncs.com
-        # ---- OpenRouter ----
+        # ---- LLM 配置 (OpenRouter) ----
         OPENROUTER_API_KEY: ""
         OPENROUTER_BASE_URL: https://openrouter.ai/api/v1
         OPENROUTER_MODEL: openrouter/auto
         OPENROUTER_AUTO_ALLOWED_MODELS: ""
-        # ---- Coze (可选) ----
+        # ---- Coze 配置 (可选) ----
         COZE_API_TOKEN: ""
         COZE_WORKFLOW_ID: "7489008649470378025"
-        # ---- 飞书 ----
+        # ---- 飞书配置 ----
         FEISHU_APP_ID: ""
         FEISHU_APP_SECRET: ""
         FEISHU_RECEIVE_ID: ""
-        # ---- Telegram (可选) ----
+        # ---- Telegram 配置 (可选) ----
         TELEGRAM_BOT_TOKEN: ""
         TELEGRAM_CHAT_ID: ""
         # ---- 发送通道 ----
         SEND_CHANNELS: feishu
+      triggers:
+        # ---- 凌晨 1:00 下载论文 + 抽取文本 ----
+        - triggerName: step1-download-extract
+          triggerType: timer
+          qualifier: LATEST
+          triggerConfig:
+            cronExpression: '0 0 1 * * *'
+            enable: true
+            payload: '{"step":"download_extract"}'
+        # ---- 凌晨 2:00 大模型总结论文 ----
+        - triggerName: step2-summarize
+          triggerType: timer
+          qualifier: LATEST
+          triggerConfig:
+            cronExpression: '0 0 2 * * *'
+            enable: true
+            payload: '{"step":"summarize","enable_coze":false}'
+        # ---- 凌晨 3:00 多通道发送 ----
+        - triggerName: step3-send
+          triggerType: timer
+          qualifier: LATEST
+          triggerConfig:
+            cronExpression: '0 0 3 * * *'
+            enable: true
+            payload: '{"step":"send","channels":["telegram"]}'
+
