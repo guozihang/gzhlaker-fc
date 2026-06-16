@@ -29,7 +29,7 @@ import time
 # ============================================================
 import arxiv
 import oss2
-import pypdfium2
+# import pypdfium2
 import requests
 from openai import OpenAI
 from cozepy import COZE_CN_BASE_URL, Coze, TokenAuth

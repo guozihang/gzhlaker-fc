@@ -1,0 +1,6 @@
+arxiv
+oss2
+pypdfium2
+requests
+cozepy
+openai
