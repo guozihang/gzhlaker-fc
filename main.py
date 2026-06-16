@@ -30,8 +30,8 @@ import arxiv
 import oss2
 import pypdfium2
 import requests
-from cozepy import COZE_CN_BASE_URL, Coze, TokenAuth
 from openai import OpenAI
+from cozepy import COZE_CN_BASE_URL, Coze, TokenAuth
 
 # ============================================================
 # 配置 - 全部从环境变量获取，无硬编码密钥
