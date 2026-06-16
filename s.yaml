@@ -71,13 +71,5 @@ resources:
           cronExpression: '0 0 3 * * *'
           enable: true
           payload: '{"step":"send","channels":["telegram"]}'
-      # ---- 早上 9:00 CCF 投稿截止倒计时 ----
-      - triggerName: step4-ccf-check
-        triggerType: timer
-        qualifier: LATEST
-        triggerConfig:
-          cronExpression: '0 0 9 * * *'
-          enable: true
-          payload: '{"step":"ccf_check"}'
 
 
