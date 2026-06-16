@@ -25,7 +25,7 @@ resources:
       layers:
         - acs:fc:cn-hongkong:official:layers/Python310-OSS2/versions/1
         - >-
-          acs:fc:cn-hongkong:1324091693163334:layers/gzhlaker-reading-layer/versions/4
+          acs:fc:cn-hongkong:1324091693163334:layers/gzhlaker-reading-layer/versions/6
       environmentVariables:            
         # OSS 配置（通过函数计算环境变量注入，替换代码中的硬编码默认值）
         OSS_ACCESS_KEY: ${env(OSS_ACCESS_KEY)}
