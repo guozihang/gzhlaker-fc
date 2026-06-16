@@ -22,7 +22,7 @@ resources:
       code: ./
       memorySize: 512
       timeout: 600
-      layer-name: gzhlaker-reading-layer
+      layers: acs:fc:cn-hongkong:1324091693163334:layers/gzhlaker-reading-layer/versions/1
       environmentVariables:            
         # OSS 配置（通过函数计算环境变量注入，替换代码中的硬编码默认值）
         OSS_ACCESS_KEY: ${env(OSS_ACCESS_KEY)}
