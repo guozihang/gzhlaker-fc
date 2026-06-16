@@ -1,0 +1,56 @@
+# ============================================================
+# Serverless Devs 配置文件 (s.yaml)
+# 用于阿里云函数计算的声明式部署
+# ============================================================
+# 文档: https://docs.serverless-devs.com/serverless-devs/yaml
+#
+# 使用前请修改以下字段:
+#   - region:    函数所在区域
+#   - service.name:   服务名称
+#   - function.name:  函数名称
+# ============================================================
+
+edition: 1.0.0
+name: gzhlaker-fc
+access: default
+
+services:
+  fc-deploy:
+    component: fc
+    props:
+      region: cn-hongkong                    # 修改为你的函数所在区域
+      service:
+        name: paper-service                  # 修改为你的服务名称
+        description: 论文自动处理系统
+      function:
+        name: gzhlaker-processor                # 修改为你的函数名称
+        description: 下载/总结/发送论文
+        runtime: python3.10
+        handler: main.handler
+        codeUri: ./
+        memorySize: 512                      # 内存 MB
+        timeout: 600                         # 超时秒数
+        environmentVariables:
+          # OSS 配置（通过函数计算环境变量注入，替换代码中的硬编码默认值）
+          OSS_ACCESS_KEY: ""
+          OSS_SECRET_KEY: ""
+          OSS_BUCKET_NAME: gzhlaker-papers
+          OSS_ENDPOINT_INTERNAL: oss-cn-hongkong-internal.aliyuncs.com
+          OSS_ENDPOINT_ACCELERATE: oss-accelerate.aliyuncs.com
+          # LLM 配置（OpenRouter）
+          OPENROUTER_API_KEY: ""
+          OPENROUTER_BASE_URL: https://openrouter.ai/api/v1
+          OPENROUTER_MODEL: openrouter/auto                    # auto = 自动选择最优模型
+          OPENROUTER_AUTO_ALLOWED_MODELS: ""                   # 可选，限制候选模型池，如 ["anthropic/*","openai/gpt-5*"]
+          # Coze 配置
+          COZE_API_TOKEN: ""
+          COZE_WORKFLOW_ID: "7489008649470378025"
+          # 飞书配置
+          FEISHU_APP_ID: ""
+          FEISHU_APP_SECRET: ""
+          FEISHU_RECEIVE_ID: ""
+          # Telegram 配置（可选）
+          TELEGRAM_BOT_TOKEN: ""
+          TELEGRAM_CHAT_ID: ""
+          # 默认发送通道
+          SEND_CHANNELS: feishu

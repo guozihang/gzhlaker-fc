@@ -1,0 +1,49 @@
+# ============================================================
+# GitHub Actions: 自动部署到阿里云函数计算 FC
+# ============================================================
+# 触发条件: 推送到 main 分支
+#
+# 使用前需要在 GitHub 仓库 Settings → Secrets and variables → Actions
+# 中添加以下 Secrets:
+#   - ALIYUN_ACCOUNT_ID      阿里云账号 ID
+#   - ALIYUN_ACCESS_KEY_ID   RAM AccessKey ID
+#   - ALIYUN_ACCESS_KEY_SECRET  RAM AccessKey Secret
+# ============================================================
+
+name: Deploy to Aliyun FC
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. 检出代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. 安装 Serverless Devs CLI（基于 Node.js 的部署工具）
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install Serverless Devs CLI
+        run: npm install -g @serverless-devs/s
+
+      # 3. 配置阿里云账号凭证（来自 GitHub Secrets）
+      - name: Configure Aliyun credentials
+        run: |
+          s config add \
+            --AccountID ${{ secrets.ALIYUN_ACCOUNT_ID }} \
+            --AccessKeyID ${{ secrets.ALIYUN_ACCESS_KEY_ID }} \
+            --AccessKeySecret ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }} \
+            -a default
+
+      # 4. 部署到函数计算
+      - name: Deploy to Aliyun FC
+        run: s deploy function --type code --use-local

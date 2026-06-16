@@ -1,0 +1,68 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*$py.class
+
+# ===== Virtual Environment =====
+venv/
+env/
+.venv/
+.virtualenv/
+
+# ===== IDE / Editor =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ===== Environment & Secrets =====
+.env
+.env.*
+.envrc
+
+# ===== Data =====
+*.pdf
+*.pickle
+*.pkl
+data/
+downloads/
+output/
+tmp/
+temp/
+papers/
+
+# ===== Logs =====
+*.log
+logs/
+
+# ===== Distribution =====
+dist/
+build/
+*.egg-info/
+*.whl
+*.egg
+
+# ===== Testing & Coverage =====
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# ===== Type Checking =====
+.mypy_cache/
+.ruff_cache/
+
+# ===== Serverless Devs =====
+.s/
+
+# ===== Misc =====
+*.bak
+*.tmp
+.cache/
