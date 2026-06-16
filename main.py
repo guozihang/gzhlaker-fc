@@ -655,6 +655,8 @@ def handler(event, context=None):
       凌晨 2:00 → {"step": "summarize"}
       凌晨 3:00 → {"step": "send", "channels": ["feishu", "telegram"]}
     """
+    if isinstance(event, bytes):
+        event = event.decode("utf-8")
     if isinstance(event, str):
         try:
             event = json.loads(event)
