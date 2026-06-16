@@ -10,6 +10,15 @@
 #   - ALIYUN_ACCOUNT_ID           阿里云账号 ID
 #   - ALIYUN_ACCESS_KEY_ID        RAM AccessKey ID
 #   - ALIYUN_ACCESS_KEY_SECRET    RAM AccessKey Secret
+#   - OSS_ACCESS_KEY              OSS AccessKey
+#   - OSS_SECRET_KEY              OSS SecretKey
+#   - OPENROUTER_API_KEY          OpenRouter API Key
+#   - COZE_API_TOKEN              Coze API Token
+#   - FEISHU_APP_ID               飞书应用 ID
+#   - FEISHU_APP_SECRET           飞书应用 Secret
+#   - FEISHU_RECEIVE_ID           飞书接收 ID
+#   - TELEGRAM_BOT_TOKEN          Telegram Bot Token（可选）
+#   - TELEGRAM_CHAT_ID            Telegram Chat ID（可选）
 # ============================================================
 
 name: Deploy to Aliyun FC
@@ -47,6 +56,16 @@ jobs:
             --AccessKeySecret ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }} \
             -a default
 
-      # 4. 部署到函数计算
+      # 4. 部署到函数计算（通过环境变量注入 Secrets，s.yaml 中 ${env(...)} 自动替换）
       - name: Deploy to Aliyun FC
+        env:
+          OSS_ACCESS_KEY: ${{ secrets.OSS_ACCESS_KEY }}
+          OSS_SECRET_KEY: ${{ secrets.OSS_SECRET_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          COZE_API_TOKEN: ${{ secrets.COZE_API_TOKEN }}
+          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          FEISHU_RECEIVE_ID: ${{ secrets.FEISHU_RECEIVE_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: s deploy function --type code --use-local

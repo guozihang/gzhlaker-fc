@@ -24,25 +24,25 @@ resources:
       timeout: 600
       environmentVariables:            
         # OSS 配置（通过函数计算环境变量注入，替换代码中的硬编码默认值）
-        OSS_ACCESS_KEY: ""
-        OSS_SECRET_KEY: ""
+        OSS_ACCESS_KEY: ${env(OSS_ACCESS_KEY)}
+        OSS_SECRET_KEY: ${env(OSS_SECRET_KEY)}
         OSS_BUCKET_NAME: gzhlaker-papers
         OSS_ENDPOINT_INTERNAL: oss-cn-hongkong-internal.aliyuncs.com
         OSS_ENDPOINT_ACCELERATE: oss-accelerate.aliyuncs.com
         # LLM 配置
-        OPENROUTER_API_KEY: ""
+        OPENROUTER_API_KEY: ${env(OPENROUTER_API_KEY)}
         OPENROUTER_BASE_URL: https://openrouter.ai/api/v1
         OPENROUTER_MODEL: arcee-ai/trinity-large-preview:free
         # Coze 配置
-        COZE_API_TOKEN: ""
+        COZE_API_TOKEN: ${env(COZE_API_TOKEN)}
         COZE_WORKFLOW_ID: "7489008649470378025"
         # 飞书配置
-        FEISHU_APP_ID: ""
-        FEISHU_APP_SECRET: ""
-        FEISHU_RECEIVE_ID: ""
+        FEISHU_APP_ID: ${env(FEISHU_APP_ID)}
+        FEISHU_APP_SECRET: ${env(FEISHU_APP_SECRET)}
+        FEISHU_RECEIVE_ID: ${env(FEISHU_RECEIVE_ID)}
         # Telegram 配置（可选）
-        TELEGRAM_BOT_TOKEN: ""
-        TELEGRAM_CHAT_ID: ""
+        TELEGRAM_BOT_TOKEN: ${env(TELEGRAM_BOT_TOKEN)}
+        TELEGRAM_CHAT_ID: ${env(TELEGRAM_CHAT_ID)}
         # 默认发送通道
         SEND_CHANNELS: feishu
       triggers:
@@ -70,5 +70,13 @@ resources:
           cronExpression: '0 0 3 * * *'
           enable: true
           payload: '{"step":"send","channels":["telegram"]}'
+      # ---- 早上 9:00 CCF 投稿截止倒计时 ----
+      - triggerName: step4-ccf-check
+        triggerType: timer
+        qualifier: LATEST
+        triggerConfig:
+          cronExpression: '0 0 9 * * *'
+          enable: true
+          payload: '{"step":"ccf_check"}'
 
 

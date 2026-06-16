@@ -4,7 +4,8 @@
 定时触发配置:
   凌晨 1:00 → {"step": "download_extract"}   下载论文 + 抽取文本
   凌晨 2:00 → {"step": "summarize"}           大模型总结论文
-  凌晨 3:00 → {"step": "send"}                发送到飞书终端
+  凌晨 3:00 → {"step": "send"}                发送到飞书/Telegram
+  早上 9:00 → {"step": "ccf_check"}           CCF 投稿截止倒计时提醒
 
 本地测试:
   python main.py download_extract
