@@ -10,15 +10,11 @@
 edition: 3.0.0
 name: gzhlaker-fc
 access: default
-
-vars:
-  region: cn-hongkong
-
 resources:
   paper-processor:
     component: fc3
     props:
-      region: ${vars.region}
+      region: cn-hongkong
       functionName: gzhlaker-processor
       description: 下载/总结/发送论文
       runtime: python3.10
