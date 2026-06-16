@@ -622,6 +622,7 @@ def step_ccf_check():
     if content_blocks:
         msg = {"zh_cn": {"title": "投稿时间提醒", "content": content_blocks}}
         _send_raw_feishu(msg)
+        _send_to_telegram(msg)
         print(f"✅ 已发送 CCF 提醒，共 {len(content_blocks)} 个会议")
     else:
         print("✅ 无 A 类会议即将截止")
