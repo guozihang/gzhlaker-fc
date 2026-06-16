@@ -275,7 +275,10 @@ def step1_download_and_extract():
                 else:
                     # --- 情况 B: 需要从 arxiv 下载 ---
                     try:
-                        result.download_pdf(dirpath=pdf_dir, filename=f"{safe_title}.pdf")
+                        resp = requests.get(result.pdf_url, timeout=120)
+                        resp.raise_for_status()
+                        with open(pdf_local_path, "wb") as f:
+                            f.write(resp.content)
                         print(f"  ✅ 下载成功: {safe_title}.pdf")
                     except Exception as e:
                         print(f"  ⚠️ 下载失败 ({result.title}): {e}")
