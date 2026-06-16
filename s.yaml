@@ -23,7 +23,7 @@ resources:
       memorySize: 512
       timeout: 600
       layers: 
-        - acs:fc:cn-hongkong:1324091693163334:layers/gzhlaker-reading-layer/versions/1
+        - acs:fc:cn-hongkong:1324091693163334:layers/gzhlaker-reading-layer/versions/2
       environmentVariables:            
         # OSS 配置（通过函数计算环境变量注入，替换代码中的硬编码默认值）
         OSS_ACCESS_KEY: ${env(OSS_ACCESS_KEY)}
@@ -35,9 +35,6 @@ resources:
         OPENROUTER_API_KEY: ${env(OPENROUTER_API_KEY)}
         OPENROUTER_BASE_URL: https://openrouter.ai/api/v1
         OPENROUTER_MODEL: arcee-ai/trinity-large-preview:free
-        # Coze 配置
-        COZE_API_TOKEN: ${env(COZE_API_TOKEN)}
-        COZE_WORKFLOW_ID: "7489008649470378025"
         # 飞书配置
         FEISHU_APP_ID: ${env(FEISHU_APP_ID)}
         FEISHU_APP_SECRET: ${env(FEISHU_APP_SECRET)}
@@ -63,7 +60,7 @@ resources:
         triggerConfig:
           cronExpression: '0 0 2 * * *'
           enable: true
-          payload: '{"step":"summarize","enable_coze":false}'
+          payload: '{"step":"summarize"}'
       # ---- 凌晨 3:00 多通道发送 ----
       - triggerName: step3-send
         triggerType: timer

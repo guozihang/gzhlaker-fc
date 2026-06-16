@@ -29,10 +29,9 @@ import time
 # ============================================================
 import arxiv
 import oss2
-# import pypdfium2
+import pypdfium2
 import requests
 from openai import OpenAI
-# from cozepy import COZE_CN_BASE_URL, Coze, TokenAuth
 
 # ============================================================
 # 配置 - 全部从环境变量获取，无硬编码密钥
@@ -65,12 +64,6 @@ LLM_CONFIG = {
     "base_url": _env("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
     "model": _env("OPENROUTER_MODEL", "openrouter/auto"),
     "auto_allowed_models": _env("OPENROUTER_AUTO_ALLOWED_MODELS", ""),
-}
-
-# ---- Coze 配置 (可选) ----
-COZE_CONFIG = {
-    "api_token": _env("COZE_API_TOKEN", ""),
-    "workflow_id": _env("COZE_WORKFLOW_ID", "7489008649470378025"),
 }
 
 # ---- 飞书配置 ----
@@ -317,11 +310,10 @@ def step1_download_and_extract():
 # Step 2: 大模型总结论文（凌晨 2:00）
 # ============================================================
 
-def step2_summarize(enable_coze=True):
+def step2_summarize():
     """
-    Step 2: 调用大模型 API 总结论文，可选 Coze 补充推荐等级。
+    Step 2: 调用大模型 API 总结论文。
     定时触发: 凌晨 2:00
-    event: {"step": "summarize", "enable_coze": true/false}
     """
     print("=" * 50)
     print("🤖 Step 2: 大模型总结论文")
@@ -432,59 +424,7 @@ def step2_summarize(enable_coze=True):
         except Exception as e:
             print(f"❌ 处理论文出错 ({paper_title}): {e}")
 
-    # --- Step 2.5: 通过 Coze 补充推荐等级 (可选) ---
-    if enable_coze and processed_papers:
-        _add_recommendations_via_coze(processed_papers)
-    elif not enable_coze:
-        print("\n⏭️ 已跳过 Coze 推荐 (enable_coze=False)")
-
     print(f"\n🏁 Step 2 完成: 共总结 {len(processed_papers)} 篇论文")
-
-
-def _add_recommendations_via_coze(processed_papers):
-    """调用 Coze 工作流为论文补充推荐等级和推荐理由。"""
-    if not COZE_CONFIG["api_token"]:
-        print("\n⏭️ 未配置 COZE_API_TOKEN，跳过 Coze 推荐")
-        return
-
-    print("\n--- 补充推荐等级 (Coze) ---")
-
-    coze = Coze(
-        auth=TokenAuth(token=COZE_CONFIG["api_token"]),
-        base_url=COZE_CN_BASE_URL,
-    )
-
-    updated = False
-    for key in list(processed_papers.keys()):
-        if "推荐等级" in processed_papers[key]:
-            print(f"  ⏭️ 已有推荐: {key}")
-            continue
-
-        try:
-            workflow = coze.workflows.runs.create(
-                workflow_id=COZE_CONFIG["workflow_id"],
-                parameters={
-                    "data": json.dumps(processed_papers[key], ensure_ascii=False),
-                    "title": key,
-                },
-            )
-            data = json.loads(workflow.data).get("data", "")
-
-            # 清理可能的 markdown 包裹
-            if "```json\n" in data:
-                data = data.replace("```json\n", "").replace("\n```", "")
-
-            recommendation = json.loads(data)
-            processed_papers[key]["推荐等级"] = recommendation.get("推荐等级", "")
-            processed_papers[key]["推荐理由"] = recommendation.get("推荐理由", "")
-            updated = True
-            print(f"  ✅ 补充推荐: {key}")
-
-        except Exception as e:
-            print(f"  ⚠️ 补充推荐失败 ({key}): {e}")
-
-    if updated:
-        _oss_save_json("processed_papers.json", processed_papers)
 
 
 # ============================================================
@@ -694,7 +634,7 @@ def step_ccf_check():
 # 步骤路由表: step → (func, 从 event 提取的额外参数)
 _STEP_MAP = {
     "download_extract": (step1_download_and_extract, []),
-    "summarize":        (step2_summarize,         ["enable_coze"]),
+    "summarize":        (step2_summarize,         []),
     "send":             (step3_send,              ["channels"]),
     "ccf_check":        (step_ccf_check,          []),
 }
@@ -706,13 +646,13 @@ def handler(event, context=None):
 
     event["step"] 指定步骤:
       "download_extract"  下载论文 + 抽取文本
-      "summarize"         大模型总结 (可选 enable_coze)
+      "summarize"         大模型总结
       "send"              多通道发送 (可选 channels)
       "ccf_check"         CCF 投稿截止提醒
 
     定时触发器示例:
       凌晨 1:00 → {"step": "download_extract"}
-      凌晨 2:00 → {"step": "summarize", "enable_coze": true}
+      凌晨 2:00 → {"step": "summarize"}
       凌晨 3:00 → {"step": "send", "channels": ["feishu", "telegram"]}
     """
     if isinstance(event, str):
