@@ -13,24 +13,20 @@ access: default
 
 vars:
   region: cn-hongkong
-  serviceName: paper-service
-  serviceDesc: 论文自动处理系统
 
 resources:
-  paper-processor:                        # 资源名称
-    component: fc3                        # 函数计算 3.0 组件
+  paper-processor:
+    component: fc3
     props:
       region: ${vars.region}
-      serviceName: ${vars.serviceName}
-      description: ${vars.serviceDesc}
-      functionName: gzhlaker-processor    # 函数名称
+      functionName: gzhlaker-processor
       description: 下载/总结/发送论文
       runtime: python3.10
       handler: main.handler
       code: ./
-      memorySize: 512                     # 内存 MB
-      timeout: 600                        # 超时秒数
-      environmentVariables:               
+      memorySize: 512
+      timeout: 600
+      environmentVariables:            
         # OSS 配置（通过函数计算环境变量注入，替换代码中的硬编码默认值）
         OSS_ACCESS_KEY: ""
         OSS_SECRET_KEY: ""
