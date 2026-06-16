@@ -1,13 +1,15 @@
 # ============================================================
 # GitHub Actions: 自动部署到阿里云函数计算 FC
 # ============================================================
-# 触发条件: 推送到 main 分支
+# 触发条件:
+#   1. 推送到 main 分支（自动）
+#   2. 手动触发（GitHub Actions 页面 → Run workflow）
 #
 # 使用前需要在 GitHub 仓库 Settings → Secrets and variables → Actions
 # 中添加以下 Secrets:
-#   - ALIYUN_ACCOUNT_ID      阿里云账号 ID
-#   - ALIYUN_ACCESS_KEY_ID   RAM AccessKey ID
-#   - ALIYUN_ACCESS_KEY_SECRET  RAM AccessKey Secret
+#   - ALIYUN_ACCOUNT_ID           阿里云账号 ID
+#   - ALIYUN_ACCESS_KEY_ID        RAM AccessKey ID
+#   - ALIYUN_ACCESS_KEY_SECRET    RAM AccessKey Secret
 # ============================================================
 
 name: Deploy to Aliyun FC
@@ -16,6 +18,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
   deploy:
