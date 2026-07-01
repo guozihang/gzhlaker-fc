@@ -91,9 +91,9 @@ def _oss_client(internal=True):
     """创建 OSS Bucket 客户端。internal=True 使用内网端点。"""
     endpoint = OSS_CONFIG["endpoint_internal"] if internal else OSS_CONFIG["endpoint_accelerate"]
     auth = oss2.Auth(OSS_CONFIG["access_key"], OSS_CONFIG["secret_key"])
-    # 设置超时：连接 15s，读取 60s（extracted_texts.json 可能很大）
+    # connect_timeout: TCP 连接超时（FC 层 oss2 版本较旧，仅支持此参数）
     return oss2.Bucket(auth, endpoint, OSS_CONFIG["bucket_name"],
-                       connect_timeout=15, timeout=60)
+                       connect_timeout=15)
 
 
 def _oss_load_json(filename, default=None, internal=True):
