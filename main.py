@@ -91,7 +91,9 @@ def _oss_client(internal=True):
     """创建 OSS Bucket 客户端。internal=True 使用内网端点。"""
     endpoint = OSS_CONFIG["endpoint_internal"] if internal else OSS_CONFIG["endpoint_accelerate"]
     auth = oss2.Auth(OSS_CONFIG["access_key"], OSS_CONFIG["secret_key"])
-    return oss2.Bucket(auth, endpoint, OSS_CONFIG["bucket_name"])
+    # 设置超时：连接 15s，读取 60s（extracted_texts.json 可能很大）
+    return oss2.Bucket(auth, endpoint, OSS_CONFIG["bucket_name"],
+                       connect_timeout=15, timeout=60)
 
 
 def _oss_load_json(filename, default=None, internal=True):
@@ -119,13 +121,24 @@ def _oss_load_text(filename, internal=True):
         return None
 
 
-def _oss_save_json(filename, data, internal=True):
-    """将数据保存为 JSON 到 OSS。"""
-    try:
-        _oss_client(internal).put_object(filename, json.dumps(data, ensure_ascii=False))
-        print(f"✅ 上传 {filename} 到 OSS ({_describe(data)} 条记录)")
-    except Exception as e:
-        print(f"❌ 上传 {filename} 失败: {e}")
+def _oss_save_json(filename, data, internal=True, retries=2):
+    """将数据保存为 JSON 到 OSS，支持自动重试。"""
+    body = json.dumps(data, ensure_ascii=False)
+    last_err = None
+    for attempt in range(retries + 1):
+        try:
+            _oss_client(internal).put_object(filename, body)
+            if attempt > 0:
+                print(f"  ↳ 重试成功")
+            print(f"✅ 上传 {filename} 到 OSS ({_describe(data)} 条记录, {len(body)} 字节)")
+            return
+        except Exception as e:
+            last_err = e
+            if attempt < retries:
+                wait = (attempt + 1) * 3
+                print(f"⚠️ 上传 {filename} 失败 (第{attempt+1}次): [{type(e).__name__}] {e}，{wait}s 后重试")
+                time.sleep(wait)
+    print(f"❌ 上传 {filename} 最终失败 (已重试{retries}次): [{type(last_err).__name__}] {last_err}")
 
 
 def _oss_file_exists(filename, internal=True):
@@ -225,12 +238,32 @@ def step1_download_and_extract():
     queries = _oss_load_json("keywords.json", [])
     extracted_texts = _oss_load_json("extracted_texts.json", {})
 
+    # 时间预算：云函数超时 600s，预留 120s 安全边际
+    _DEADLINE = time.monotonic() + 480  # 8 分钟后强制停止新任务
+    _MIN_REMAINING = 60  # 剩余不足 60s 时停止，留时间做最后的 OSS 保存
+    _SAVE_EVERY = 5  # 每处理 N 篇新论文才保存一次 OSS（减少大 JSON 上传频率）
+    _new_since_save = 0
+
     pdf_dir = "/tmp/papers"  # 函数计算中 /tmp 是可写目录
     os.makedirs(pdf_dir, exist_ok=True)
 
-    arxiv_client = arxiv.Client()
+    # delay_seconds: 请求间隔（默认3秒，arXiv 限流严格，加大到15秒）
+    # num_retries: 失败重试次数（减少重试，避免越重试越被限流）
+    arxiv_client = arxiv.Client(
+        page_size=50,
+        delay_seconds=15.0,
+        num_retries=2,
+    )
 
-    for query in queries:
+    # arXiv 对不同关键词的搜索之间至少间隔 60 秒，避免触发 429
+    _QUERY_COOLDOWN = 60
+
+    for idx, query in enumerate(queries):
+        # 第一个关键词不需要等待，后续关键词之间等待
+        if idx > 0:
+            print(f"\n⏳ 等待 {_QUERY_COOLDOWN}s 后搜索下一个关键词...")
+            time.sleep(_QUERY_COOLDOWN)
+
         print(f"\n🔍 搜索关键词: {query}")
         try:
             search = arxiv.Search(
@@ -240,6 +273,13 @@ def step1_download_and_extract():
             )
 
             for result in arxiv_client.results(search):
+                # ---- 时间预算检查：剩余时间不足则优雅退出 ----
+                remaining = _DEADLINE - time.monotonic()
+                if remaining < _MIN_REMAINING:
+                    print(f"  ⏰ 剩余时间 {remaining:.0f}s 不足 {_MIN_REMAINING}s，停止处理新论文")
+                    # 跳出内层循环，外层会继续持久化
+                    break
+
                 # 过滤旧论文
                 if result.published.strftime("%Y-%m-%d") < "2025-04-20":
                     continue
@@ -298,14 +338,30 @@ def step1_download_and_extract():
                 if os.path.exists(pdf_local_path):
                     os.remove(pdf_local_path)
 
-                # 每处理一篇就持久化（防止中断丢失进度）
-                _oss_save_json("extracted_texts.json", extracted_texts)
-                _oss_save_json("unread_papers.json", unread_papers)
+                _new_since_save += 1
+
+                # 每 N 篇或时间紧张时持久化（减少大 JSON 的 OSS 上传频率）
+                remaining = _DEADLINE - time.monotonic()
+                if _new_since_save >= _SAVE_EVERY or remaining < 120:
+                    _oss_save_json("extracted_texts.json", extracted_texts)
+                    _oss_save_json("unread_papers.json", unread_papers)
+                    _new_since_save = 0
 
         except StopIteration:
             print(f"  ❌ 关键词无结果: {query}")
         except Exception as e:
             print(f"  ❌ 处理关键词 '{query}' 出错: {e}")
+
+        # 时间不足时跳过剩余关键词
+        remaining = _DEADLINE - time.monotonic()
+        if remaining < _MIN_REMAINING:
+            print(f"  ⏰ 剩余时间 {remaining:.0f}s，跳过剩余关键词")
+            break
+
+    # 最终持久化：保存剩余未写入的数据
+    if _new_since_save > 0:
+        _oss_save_json("extracted_texts.json", extracted_texts)
+        _oss_save_json("unread_papers.json", unread_papers)
 
     print(f"\n🏁 Step 1 完成: 共抽取 {len(extracted_texts)} 篇论文文本")
 
@@ -337,10 +393,15 @@ def step2_summarize():
         print("❌ 没有待处理的论文文本，终止执行")
         return
 
-    # 初始化 LLM 客户端
+    # 时间预算：云函数超时 600s，预留 120s 安全边际
+    _DEADLINE = time.monotonic() + 480
+    _MIN_REMAINING = 60  # 剩余不足 60s 时停止
+
+    # 初始化 LLM 客户端（显式设置超时，避免一次调用耗尽全部预算）
     llm_client = OpenAI(
         api_key=LLM_CONFIG["api_key"],
         base_url=LLM_CONFIG["base_url"],
+        timeout=120.0,  # 单次 LLM 调用最长 120 秒
     )
 
     items_list = list(extracted_texts.items())
@@ -350,6 +411,12 @@ def step2_summarize():
     print(f"📊 共 {len(items_list)} 篇论文，从第 {start_index} 篇开始处理\n")
 
     for paper_title, paper_text in items_list[start_index:]:
+        # ---- 时间预算检查 ----
+        remaining = _DEADLINE - time.monotonic()
+        if remaining < _MIN_REMAINING:
+            print(f"  ⏰ 剩余时间 {remaining:.0f}s 不足 {_MIN_REMAINING}s，停止处理")
+            break
+
         # 跳过已处理的
         if paper_title in read_papers:
             print(f"⏭️ 已总结过: {paper_title}")
@@ -422,8 +489,12 @@ def step2_summarize():
             else:
                 print(f"❌ LLM 返回空内容: {paper_title}")
 
-            # API 限速
-            time.sleep(3)
+            # API 限速（时间充裕时等待，紧张时跳过等待）
+            remaining = _DEADLINE - time.monotonic()
+            if remaining > 120:
+                time.sleep(3)
+            elif remaining > 60:
+                time.sleep(1)
 
         except Exception as e:
             print(f"❌ 处理论文出错 ({paper_title}): {e}")
@@ -475,6 +546,10 @@ def step3_send(channels=None):
 
     _oss_save_json("upload_papers.json", upload_papers, internal=False)
 
+    # 时间预算
+    _DEADLINE = time.monotonic() + 480
+    _MIN_REMAINING = 30
+
     for channel in channels:
         channel = channel.strip().lower()
         sender = _CHANNEL_SENDERS.get(channel)
@@ -485,6 +560,10 @@ def step3_send(channels=None):
         print(f"\n--- 通过 {channel} 发送 ---")
         ok = 0
         for i, (title, info) in enumerate(new_papers):
+            remaining = _DEADLINE - time.monotonic()
+            if remaining < _MIN_REMAINING:
+                print(f"  ⏰ 剩余时间 {remaining:.0f}s，停止发送 (已发 {ok}/{len(new_papers)})")
+                break
             if i > 0 and i % 5 == 0:
                 time.sleep(1)
             if sender(title, info):

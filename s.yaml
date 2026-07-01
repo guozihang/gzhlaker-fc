@@ -1,11 +1,5 @@
 # Serverless Devs 配置文件 (s.yaml)  — edition 3.0.0
 # 文档: https://docs.serverless-devs.com/user-guide/spec/
-# ============================================================
-# 使用前修改:
-#   vars.region     → 函数所在区域
-#   vars.serviceName → 服务名称
-#   resources 中的 functionName → 函数名称
-# ============================================================
 
 edition: 3.0.0
 name: gzhlaker-fc
@@ -20,14 +14,27 @@ resources:
       runtime: python3.10
       handler: main.handler
       code: ./
-      memorySize: 512
-      timeout: 600
+      timeout: 3000
+      memorySize: 832
+      cpu: 0.35
+      diskSize: 10240
+      internetAccess: true
+      instanceIsolationMode: SHARE
+      sessionAffinity: NONE
+      disableOndemand: false
       layers:
         - acs:fc:cn-hongkong:official:layers/Python310-OSS2/versions/1
         - >-
           acs:fc:cn-hongkong:1324091693163334:layers/gzhlaker-reading-layer/versions/11
-      environmentVariables:            
-        # OSS 配置（通过函数计算环境变量注入，替换代码中的硬编码默认值）
+      logConfig:
+        enableRequestMetrics: true
+        enableInstanceMetrics: true
+        logBeginRule: DefaultRegex
+        project: serverless-cn-hongkong-8de70aa5-ab5d-5ce2-ad0e-422f963dc3b5
+        logstore: default-logs
+        enableLlmMetrics: false
+      environmentVariables:
+        # OSS 配置
         OSS_ACCESS_KEY: ${env(OSS_ACCESS_KEY)}
         OSS_SECRET_KEY: ${env(OSS_SECRET_KEY)}
         OSS_BUCKET_NAME: gzhlaker-papers
@@ -41,35 +48,33 @@ resources:
         FEISHU_APP_ID: ${env(FEISHU_APP_ID)}
         FEISHU_APP_SECRET: ${env(FEISHU_APP_SECRET)}
         FEISHU_RECEIVE_ID: ${env(FEISHU_RECEIVE_ID)}
-        # Telegram 配置（可选）
+        # Telegram 配置
         TELEGRAM_BOT_TOKEN: ${env(TELEGRAM_BOT_TOKEN)}
         TELEGRAM_CHAT_ID: ${env(TELEGRAM_CHAT_ID)}
         # 默认发送通道
         SEND_CHANNELS: feishu
       triggers:
-      # ---- 凌晨 1:00 下载论文 + 抽取文本 ----
-      - triggerName: step1-download-extract
-        triggerType: timer
-        qualifier: LATEST
-        triggerConfig:
-          cronExpression: '0 0 1 * * *'
-          enable: true
-          payload: '{"step":"download_extract"}'
-      # ---- 凌晨 2:00 大模型总结论文 ----
-      - triggerName: step2-summarize
-        triggerType: timer
-        qualifier: LATEST
-        triggerConfig:
-          cronExpression: '0 0 2 * * *'
-          enable: true
-          payload: '{"step":"summarize"}'
-      # ---- 凌晨 3:00 多通道发送 ----
-      - triggerName: step3-send
-        triggerType: timer
-        qualifier: LATEST
-        triggerConfig:
-          cronExpression: '0 0 3 * * *'
-          enable: true
-          payload: '{"step":"send","channels":["telegram"]}'
-
-
+        # ---- 凌晨 1:00 下载论文 + 抽取文本 ----
+        - triggerName: step1-download-extract
+          triggerType: timer
+          qualifier: LATEST
+          triggerConfig:
+            cronExpression: '0 0 1 * * *'
+            enable: true
+            payload: '{"step":"download_extract"}'
+        # ---- 凌晨 2:00 大模型总结论文 ----
+        - triggerName: step2-summarize
+          triggerType: timer
+          qualifier: LATEST
+          triggerConfig:
+            cronExpression: '0 0 2 * * *'
+            enable: true
+            payload: '{"step":"summarize"}'
+        # ---- 凌晨 3:00 多通道发送 ----
+        - triggerName: step3-send
+          triggerType: timer
+          qualifier: LATEST
+          triggerConfig:
+            cronExpression: '0 0 3 * * *'
+            enable: true
+            payload: '{"step":"send","channels":["telegram"]}'
