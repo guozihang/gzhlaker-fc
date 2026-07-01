@@ -238,8 +238,8 @@ def step1_download_and_extract():
     queries = _oss_load_json("keywords.json", [])
     extracted_texts = _oss_load_json("extracted_texts.json", {})
 
-    # 时间预算：云函数超时 600s，预留 120s 安全边际
-    _DEADLINE = time.monotonic() + 480  # 8 分钟后强制停止新任务
+    # 时间预算：云函数超时 3000s，预留 120s 安全边际
+    _DEADLINE = time.monotonic() + 2880  # 48 分钟后强制停止新任务
     _MIN_REMAINING = 60  # 剩余不足 60s 时停止，留时间做最后的 OSS 保存
     _SAVE_EVERY = 5  # 每处理 N 篇新论文才保存一次 OSS（减少大 JSON 上传频率）
     _new_since_save = 0
@@ -393,8 +393,8 @@ def step2_summarize():
         print("❌ 没有待处理的论文文本，终止执行")
         return
 
-    # 时间预算：云函数超时 600s，预留 120s 安全边际
-    _DEADLINE = time.monotonic() + 480
+    # 时间预算：云函数超时 3000s，预留 120s 安全边际
+    _DEADLINE = time.monotonic() + 2880
     _MIN_REMAINING = 60  # 剩余不足 60s 时停止
 
     # 初始化 LLM 客户端（显式设置超时，避免一次调用耗尽全部预算）
@@ -547,7 +547,7 @@ def step3_send(channels=None):
     _oss_save_json("upload_papers.json", upload_papers, internal=False)
 
     # 时间预算
-    _DEADLINE = time.monotonic() + 480
+    _DEADLINE = time.monotonic() + 2880
     _MIN_REMAINING = 30
 
     for channel in channels:
