@@ -1,11 +1,11 @@
 """
 论文自动处理系统 - 阿里云函数计算入口
 
-定时触发配置:
-  凌晨 1:00 → {"step": "download_extract"}   下载论文 + 抽取文本
-  凌晨 2:00 → {"step": "summarize"}           大模型总结论文
-  凌晨 3:00 → {"step": "send"}                发送到飞书/Telegram
-  早上 9:00 → {"step": "ccf_check"}           CCF 投稿截止倒计时提醒
+定时触发配置 (Asia/Shanghai):
+  18:00 → {"step": "download_extract"}   下载论文 + 抽取文本
+  01:00 → {"step": "summarize"}           大模型总结论文
+  07:00 → {"step": "send"}                发送到飞书/Telegram
+  (ccf_check 手动触发)
 
 本地测试:
   python main.py download_extract
@@ -163,6 +163,8 @@ def _describe(data):
     return "?"
 
 
+
+
 # ============================================================
 # PDF 文本抽取
 # ============================================================
@@ -227,21 +229,48 @@ def step1_download_and_extract():
     """
     Step 1: 从 arxiv 下载论文并抽取文本内容。
     定时触发: 凌晨 1:00
+
+    每篇论文的文本存入独立文件 extracted_texts/{safe_title}.json，避免单文件过大。
     """
     print("=" * 50)
     print("📥 Step 1: 下载论文 & 抽取文本")
     print("=" * 50)
 
-    # 加载状态文件
-    read_papers = _oss_load_json("read_papers.json", [])
-    unread_papers = _oss_load_json("unread_papers.json", [])
+    # 加载队列（同时用作 O(1) 去重集）和关键词
+    unread_queue = _oss_load_json("unread_queue.json", [])
+    queue_set = set(unread_queue)
     queries = _oss_load_json("keywords.json", [])
-    extracted_texts = _oss_load_json("extracted_texts.json", {})
+
+    # ── 恢复已有数据 ──
+    # 扫描 extracted_texts/ 和 processed/，将"有文本但未处理"的论文加入队列。
+    # PDF 可能已被 OSS 过期策略删除，但有文本就能总结。
+    try:
+        extracted_titles = set()
+        for obj in oss2.ObjectIterator(_oss_client(), prefix="extracted_texts/"):
+            if obj.key.endswith(".json"):
+                extracted_titles.add(obj.key[len("extracted_texts/"):-len(".json")])
+
+        processed_titles = set()
+        for obj in oss2.ObjectIterator(_oss_client(), prefix="processed/"):
+            if obj.key.endswith(".json"):
+                processed_titles.add(obj.key[len("processed/"):-len(".json")])
+
+        # 有提取文本 且 未处理 且 不在队列中 → 入队
+        missing = extracted_titles - processed_titles - queue_set
+        for title in missing:
+            unread_queue.append(title)
+            queue_set.add(title)
+
+        if missing:
+            print(f"📦 从已有文件恢复 {len(missing)} 篇到队列")
+            _oss_save_json("unread_queue.json", unread_queue)
+    except Exception as e:
+        print(f"⚠️ 恢复旧数据失败: {e}")
 
     # 时间预算：云函数超时 3000s，预留 120s 安全边际
     _DEADLINE = time.monotonic() + 2880  # 48 分钟后强制停止新任务
     _MIN_REMAINING = 60  # 剩余不足 60s 时停止，留时间做最后的 OSS 保存
-    _SAVE_EVERY = 5  # 每处理 N 篇新论文才保存一次 OSS（减少大 JSON 上传频率）
+    _SAVE_EVERY = 5  # 每 N 篇持久化一次
     _new_since_save = 0
 
     pdf_dir = "/tmp/papers"  # 函数计算中 /tmp 是可写目录
@@ -277,19 +306,19 @@ def step1_download_and_extract():
                 remaining = _DEADLINE - time.monotonic()
                 if remaining < _MIN_REMAINING:
                     print(f"  ⏰ 剩余时间 {remaining:.0f}s 不足 {_MIN_REMAINING}s，停止处理新论文")
-                    # 跳出内层循环，外层会继续持久化
                     break
 
                 # 过滤旧论文
                 if result.published.strftime("%Y-%m-%d") < "2025-04-20":
                     continue
 
-                # 生成安全的文件名
+                # 生成安全的文件名（也用作论文唯一 ID）
                 safe_title = "".join(
                     c if c.isalnum() or c in " -_" else "_" for c in result.title
                 )
 
-                if safe_title in read_papers or safe_title in unread_papers:
+                # O(1) set 查重：在队列中或原始文件已存在则跳过
+                if safe_title in queue_set or _oss_file_exists(f"extracted_texts/{safe_title}.json"):
                     print(f"  ⏭️ 已处理过: {result.title}")
                     continue
 
@@ -311,8 +340,10 @@ def step1_download_and_extract():
 
                     text = _extract_pdf_text(pdf_local_path, safe_title)
                     if text:
-                        extracted_texts[safe_title] = text
-                        unread_papers.append(safe_title)
+                        _oss_save_json(f"extracted_texts/{safe_title}.json",
+                                       {"title": safe_title, "text": text})
+                        queue_set.add(safe_title)
+                        unread_queue.append(safe_title)
                 else:
                     # --- 情况 B: 需要从 arxiv 下载 ---
                     try:
@@ -328,11 +359,13 @@ def step1_download_and_extract():
                     # 抽取文本
                     text = _extract_pdf_text(pdf_local_path, safe_title)
                     if text:
-                        extracted_texts[safe_title] = text
+                        _oss_save_json(f"extracted_texts/{safe_title}.json",
+                                       {"title": safe_title, "text": text})
 
                     # 上传 PDF 到 OSS
                     _oss_upload_file(pdf_local_path, pdf_oss_path)
-                    unread_papers.append(safe_title)
+                    queue_set.add(safe_title)
+                    unread_queue.append(safe_title)
 
                 # 清理本地临时文件
                 if os.path.exists(pdf_local_path):
@@ -340,11 +373,10 @@ def step1_download_and_extract():
 
                 _new_since_save += 1
 
-                # 每 N 篇或时间紧张时持久化（减少大 JSON 的 OSS 上传频率）
+                # 每 N 篇或时间紧张时持久化队列
                 remaining = _DEADLINE - time.monotonic()
                 if _new_since_save >= _SAVE_EVERY or remaining < 120:
-                    _oss_save_json("extracted_texts.json", extracted_texts)
-                    _oss_save_json("unread_papers.json", unread_papers)
+                    _oss_save_json("unread_queue.json", unread_queue)
                     _new_since_save = 0
 
         except StopIteration:
@@ -358,12 +390,10 @@ def step1_download_and_extract():
             print(f"  ⏰ 剩余时间 {remaining:.0f}s，跳过剩余关键词")
             break
 
-    # 最终持久化：保存剩余未写入的数据
-    if _new_since_save > 0:
-        _oss_save_json("extracted_texts.json", extracted_texts)
-        _oss_save_json("unread_papers.json", unread_papers)
+    # 最终持久化
+    _oss_save_json("unread_queue.json", unread_queue)
 
-    print(f"\n🏁 Step 1 完成: 共抽取 {len(extracted_texts)} 篇论文文本")
+    print(f"\n🏁 Step 1 完成: 队列共 {len(unread_queue)} 篇待总结")
 
 
 # ============================================================
@@ -374,53 +404,74 @@ def step2_summarize():
     """
     Step 2: 调用大模型 API 总结论文。
     定时触发: 凌晨 2:00
+
+    从 unread_queue 队列取论文，加载独立文件，总结后出队。
     """
     print("=" * 50)
     print("🤖 Step 2: 大模型总结论文")
     print("=" * 50)
 
-    # 加载数据
-    extracted_texts = _oss_load_json("extracted_texts.json", {})
-    read_papers = _oss_load_json("read_papers.json", [])
-    processed_papers = _oss_load_json("processed_papers.json", {})
+    # 加载队列（不再需要 processed_papers.json）
+    unread_queue = _oss_load_json("unread_queue.json", [])
     challenge_text = _oss_load_text("challenge_text.txt")
 
     if challenge_text is None:
         print("❌ 缺少 challenge_text.txt，终止执行")
         return
 
-    if not extracted_texts:
-        print("❌ 没有待处理的论文文本，终止执行")
+    if not unread_queue:
+        print("❌ 队列为空，终止执行")
         return
 
-    # 时间预算：云函数超时 3000s，预留 120s 安全边际
-    _DEADLINE = time.monotonic() + 2880
-    _MIN_REMAINING = 60  # 剩余不足 60s 时停止
+    # 每次最多处理 300 篇（从队列尾部，即最近入队的开始）
+    MAX_PER_RUN = 300
+    start_index = max(0, len(unread_queue) - MAX_PER_RUN)
+    to_process = unread_queue[start_index:]
+    print(f"📊 队列共 {len(unread_queue)} 篇，本次处理 {len(to_process)} 篇\n")
 
-    # 初始化 LLM 客户端（显式设置超时，避免一次调用耗尽全部预算）
+    done = set()  # 本次成功处理的论文标题
+
+    # 向后兼容：如果队列中有论文缺少独立文件，一次性加载旧版 extracted_texts.json
+    _legacy_texts = None
+    _legacy_loaded = False
+
+    # 时间预算
+    _DEADLINE = time.monotonic() + 2880
+    _MIN_REMAINING = 60
+
+    # 初始化 LLM 客户端
     llm_client = OpenAI(
         api_key=LLM_CONFIG["api_key"],
         base_url=LLM_CONFIG["base_url"],
-        timeout=120.0,  # 单次 LLM 调用最长 120 秒
+        timeout=120.0,
     )
 
-    items_list = list(extracted_texts.items())
-    # 从倒数第300篇开始（处理最近的论文）
-    start_index = max(0, len(items_list) - 300)
-
-    print(f"📊 共 {len(items_list)} 篇论文，从第 {start_index} 篇开始处理\n")
-
-    for paper_title, paper_text in items_list[start_index:]:
-        # ---- 时间预算检查 ----
+    for paper_title in to_process:
+        # 时间预算检查
         remaining = _DEADLINE - time.monotonic()
         if remaining < _MIN_REMAINING:
-            print(f"  ⏰ 剩余时间 {remaining:.0f}s 不足 {_MIN_REMAINING}s，停止处理")
+            print(f"  ⏰ 剩余时间不足，停止处理")
             break
 
-        # 跳过已处理的
-        if paper_title in read_papers:
-            print(f"⏭️ 已总结过: {paper_title}")
-            continue
+        # 按需加载单篇论文文本
+        paper_file = f"extracted_texts/{paper_title}.json"
+        paper_data = _oss_load_json(paper_file, {})
+        paper_text = paper_data.get("text", "") if paper_data else ""
+
+        if not paper_text:
+            # 向后兼容：仅在找不到独立文件时，一次性加载旧版 extracted_texts.json
+            if not _legacy_loaded:
+                _legacy_loaded = True
+                print("  📦 检测到旧版 extracted_texts.json，尝试加载（仅一次）...")
+                try:
+                    _legacy_texts = _oss_load_json("extracted_texts.json", {})
+                except Exception as e:
+                    print(f"  ⚠️ 旧版文件加载失败: {e}")
+                    _legacy_texts = {}
+            paper_text = (_legacy_texts or {}).get(paper_title, "")
+            if not paper_text:
+                print(f"  ⚠️ 未找到文本，跳过: {paper_title}")
+                continue
 
         try:
             user_prompt = f"""
@@ -455,7 +506,7 @@ def step2_summarize():
                 print(f"⚠️ 论文过长，截断处理: {paper_title}")
                 user_prompt = user_prompt[:100000]
 
-            # 调用 LLM（openrouter/auto 自动选择最优模型）
+            # 调用 LLM
             create_kwargs = {
                 "model": LLM_CONFIG["model"],
                 "messages": [
@@ -465,7 +516,6 @@ def step2_summarize():
                 "response_format": {"type": "json_object"},
             }
 
-            # 若使用 openrouter/auto 且配置了候选模型池，通过 plugins 限制
             if LLM_CONFIG["model"] == "openrouter/auto" and LLM_CONFIG["auto_allowed_models"]:
                 try:
                     allowed = json.loads(LLM_CONFIG["auto_allowed_models"])
@@ -479,17 +529,14 @@ def step2_summarize():
             content = response.choices[0].message.content
             if content:
                 result = json.loads(content)
-                processed_papers[paper_title] = result
-                read_papers.append(paper_title)
+                # 每篇论文的处理结果存为独立文件
+                _oss_save_json(f"processed/{paper_title}.json", result)
+                done.add(paper_title)
                 print(f"✅ 总结完成: {paper_title}")
-
-                # 持久化
-                _oss_save_json("processed_papers.json", processed_papers)
-                _oss_save_json("read_papers.json", read_papers)
             else:
                 print(f"❌ LLM 返回空内容: {paper_title}")
 
-            # API 限速（时间充裕时等待，紧张时跳过等待）
+            # API 限速
             remaining = _DEADLINE - time.monotonic()
             if remaining > 120:
                 time.sleep(3)
@@ -499,7 +546,11 @@ def step2_summarize():
         except Exception as e:
             print(f"❌ 处理论文出错 ({paper_title}): {e}")
 
-    print(f"\n🏁 Step 2 完成: 共总结 {len(processed_papers)} 篇论文")
+    # 一次性出队：用 set 做 O(1) 过滤
+    unread_queue = [t for t in unread_queue if t not in done]
+    _oss_save_json("unread_queue.json", unread_queue)
+
+    print(f"\n🏁 Step 2 完成: 本次总结 {len(done)} 篇，队列剩余 {len(unread_queue)} 篇")
 
 
 # ============================================================
@@ -527,18 +578,24 @@ def step3_send(channels=None):
     print(f"📤 Step 3: 发送论文 → 通道: {channels}")
     print("=" * 50)
 
-    processed_papers = _oss_load_json("processed_papers.json", {})
     upload_papers = _oss_load_json("upload_papers.json", [], internal=False)
 
-    if not processed_papers:
-        print("❌ 没有已处理的论文，终止执行")
-        return
-
+    # 列出 processed/ 目录下所有独立处理结果文件
     new_papers = []
-    for title, info in processed_papers.items():
-        if title not in upload_papers:
-            new_papers.append((title, info))
-            upload_papers.append(title)
+    try:
+        for obj in oss2.ObjectIterator(_oss_client(internal=False), prefix="processed/"):
+            if not obj.key.endswith(".json"):
+                continue
+            # 从文件名提取论文标题：processed/{title}.json → title
+            title = obj.key[len("processed/"):-len(".json")]
+            if title in upload_papers:
+                continue
+            info = _oss_load_json(obj.key, {}, internal=False)
+            if info:
+                new_papers.append((title, info))
+                upload_papers.append(title)
+    except Exception as e:
+        print(f"⚠️ 列举 processed/ 文件失败: {e}")
 
     if not new_papers:
         print("✅ 没有需要发送的新论文")
@@ -734,10 +791,10 @@ def handler(event, context=None):
       "send"              多通道发送 (可选 channels)
       "ccf_check"         CCF 投稿截止提醒
 
-    定时触发器示例:
-      凌晨 1:00 → {"step": "download_extract"}
-      凌晨 2:00 → {"step": "summarize"}
-      凌晨 3:00 → {"step": "send", "channels": ["feishu", "telegram"]}
+    s.yaml 定时触发器 (Asia/Shanghai):
+      18:00 → {"step": "download_extract"}
+      01:00 → {"step": "summarize"}
+      07:00 → {"step": "send", "channels": ["telegram"]}
     """
     if isinstance(event, bytes):
         event = event.decode("utf-8")
@@ -746,6 +803,20 @@ def handler(event, context=None):
             event = json.loads(event)
         except json.JSONDecodeError:
             event = {"step": event}
+
+    # FC3 timer 触发器可能将 payload 包装在外层 dict 中（含 triggerTime/triggerName），
+    # 此时 event 没有顶层 "step" 键，需从 "payload" 中提取实际的步骤参数。
+    if isinstance(event, dict) and "step" not in event and "payload" in event:
+        payload = event["payload"]
+        if isinstance(payload, bytes):
+            payload = payload.decode("utf-8")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                payload = {"step": payload}
+        if isinstance(payload, dict):
+            event = payload
 
     step = event.get("step", "download_extract")
 
