@@ -429,8 +429,6 @@ def step2_summarize():
     to_process = unread_queue[start_index:]
     print(f"📊 队列共 {len(unread_queue)} 篇，本次处理 {len(to_process)} 篇\n")
 
-    done = set()  # 本次成功处理的论文标题
-
     # 向后兼容：如果队列中有论文缺少独立文件，一次性加载旧版 extracted_texts.json
     _legacy_texts = None
     _legacy_loaded = False
@@ -529,10 +527,12 @@ def step2_summarize():
             content = response.choices[0].message.content
             if content:
                 result = json.loads(content)
-                # 每篇论文的处理结果存为独立文件
+                # 保存处理结果
                 _oss_save_json(f"processed/{paper_title}.json", result)
-                done.add(paper_title)
-                print(f"✅ 总结完成: {paper_title}")
+                # 立即出队并持久化，避免超时/崩溃导致队列状态丢失
+                unread_queue.remove(paper_title)
+                _oss_save_json("unread_queue.json", unread_queue)
+                print(f"✅ 总结完成 (队列剩余 {len(unread_queue)}): {paper_title}")
             else:
                 print(f"❌ LLM 返回空内容: {paper_title}")
 
@@ -546,11 +546,7 @@ def step2_summarize():
         except Exception as e:
             print(f"❌ 处理论文出错 ({paper_title}): {e}")
 
-    # 一次性出队：用 set 做 O(1) 过滤
-    unread_queue = [t for t in unread_queue if t not in done]
-    _oss_save_json("unread_queue.json", unread_queue)
-
-    print(f"\n🏁 Step 2 完成: 本次总结 {len(done)} 篇，队列剩余 {len(unread_queue)} 篇")
+    print(f"\n🏁 Step 2 完成: 队列剩余 {len(unread_queue)} 篇")
 
 
 # ============================================================
