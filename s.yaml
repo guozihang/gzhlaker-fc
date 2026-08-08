@@ -45,7 +45,7 @@ resources:
         # LLM 配置
         OPENROUTER_API_KEY: ${env(OPENROUTER_API_KEY)}
         OPENROUTER_BASE_URL: https://openrouter.ai/api/v1
-        OPENROUTER_MODEL: cohere/north-mini-code:free
+        OPENROUTER_MODEL: openrouter/free
         # 飞书配置
         FEISHU_APP_ID: ${env(FEISHU_APP_ID)}
         FEISHU_APP_SECRET: ${env(FEISHU_APP_SECRET)}
