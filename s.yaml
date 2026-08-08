@@ -56,30 +56,30 @@ resources:
         # 默认发送通道
         SEND_CHANNELS: feishu
       triggers:
-        # ---- 18:00 下载论文 + 抽取文本 ----
+        # ---- Step 1: 下载论文 + 抽取文本 (每天 3 次: 00:00 / 08:00 / 16:00) ----
         - triggerName: step1-download-extract
           triggerType: timer
           qualifier: LATEST
           description: ''
           triggerConfig:
-            cronExpression: CRON_TZ=Asia/Shanghai 0 0 18 * * *
+            cronExpression: CRON_TZ=Asia/Shanghai 0 0 0,8,16 * * *
             enable: true
             payload: '{"step":"download_extract"}'
-        # ---- 凌晨 1:00 大模型总结论文 ----
+        # ---- Step 2: 大模型总结论文 (每天 3 次: 02:00 / 10:00 / 18:00) ----
         - triggerName: step2-summarize
           triggerType: timer
           qualifier: LATEST
           description: ''
           triggerConfig:
-            cronExpression: CRON_TZ=Asia/Shanghai 0 0 1 * * *
+            cronExpression: CRON_TZ=Asia/Shanghai 0 0 2,10,18 * * *
             enable: true
             payload: '{"step":"summarize"}'
-        # ---- 早上 7:00 多通道发送 ----
+        # ---- Step 3: 多通道发送 (每天 3 次: 05:00 / 13:00 / 21:00) ----
         - triggerName: step3-send
           triggerType: timer
           qualifier: LATEST
           description: ''
           triggerConfig:
-            cronExpression: CRON_TZ=Asia/Shanghai 0 0 7 * * *
+            cronExpression: CRON_TZ=Asia/Shanghai 0 0 5,13,21 * * *
             enable: true
             payload: '{"step":"send","channels":["telegram"]}'
