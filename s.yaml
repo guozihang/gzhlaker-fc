@@ -52,7 +52,6 @@ resources:
         # 滴答清单配置
         DIDA_PHONE: ${env(DIDA_PHONE)}
         DIDA_PASSWORD: ${env(DIDA_PASSWORD)}
-        DIDA_BREAKDOWN_TAG: ${env(DIDA_BREAKDOWN_TAG)}
         # 默认发送通道
         SEND_CHANNELS: telegram
       triggers:

@@ -45,5 +45,5 @@ TELEGRAM_CONFIG = {
 DIDA_CONFIG = {
     "phone": _require_env("DIDA_PHONE"),
     "password": _require_env("DIDA_PASSWORD"),
-    "breakdown_tag": _env("DIDA_BREAKDOWN_TAG", "拆解"),
+    "breakdown_tag": "拆解",
 }
