@@ -18,6 +18,8 @@
 #   - FEISHU_RECEIVE_ID           飞书接收 ID
 #   - TELEGRAM_BOT_TOKEN          Telegram Bot Token（可选）
 #   - TELEGRAM_CHAT_ID            Telegram Chat ID（可选）
+#   - DIDA_USERNAME               滴答清单用户名
+#   - DIDA_PASSWORD               滴答清单密码
 # ============================================================
 
 name: Deploy to Aliyun FC
@@ -67,6 +69,8 @@ jobs:
           FEISHU_RECEIVE_ID: ${{ secrets.FEISHU_RECEIVE_ID }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DIDA_USERNAME: ${{ secrets.DIDA_USERNAME }}
+          DIDA_PASSWORD: ${{ secrets.DIDA_PASSWORD }}
         run: s remove --assume-yes
 
       # 5. 重新创建函数（环境变量从 GitHub Secrets 注入，s.yaml 中 ${env(...)} 自动替换）
@@ -80,4 +84,6 @@ jobs:
           FEISHU_RECEIVE_ID: ${{ secrets.FEISHU_RECEIVE_ID }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DIDA_USERNAME: ${{ secrets.DIDA_USERNAME }}
+          DIDA_PASSWORD: ${{ secrets.DIDA_PASSWORD }}
         run: s deploy --assume-yes

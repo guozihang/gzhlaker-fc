@@ -2,15 +2,16 @@
 论文自动处理系统 - 阿里云函数计算入口
 
 定时触发配置 (Asia/Shanghai):
-  18:00 → {"step": "download_extract"}   下载论文 + 抽取文本
-  01:00 → {"step": "summarize"}           大模型总结论文
-  07:00 → {"step": "send"}                发送到飞书/Telegram
-  (ccf_check 手动触发)
+  00:00/08:00/16:00 → {"step": "download_extract"}   下载论文 + 抽取文本
+  02:00/10:00/18:00 → {"step": "summarize"}           大模型总结 + Telegram 推送
+  周一 08:00        → {"step": "weekly_summary"}      每周总结
+  (send / ccf_check 手动触发)
 
 本地测试:
   python main.py download_extract
   python main.py summarize
   python main.py send
+  python main.py weekly_summary
 """
 
 
@@ -80,8 +81,11 @@ TELEGRAM_CONFIG = {
     "chat_id": _env("TELEGRAM_CHAT_ID", ""),
 }
 
-# ---- 默认发送通道 ----
-DEFAULT_CHANNELS = _env("SEND_CHANNELS", "feishu").split(",")
+# ---- 滴答清单配置 ----
+DIDA_CONFIG = {
+    "username": _require_env("DIDA_USERNAME"),
+    "password": _require_env("DIDA_PASSWORD"),
+}
 
 # ============================================================
 # OSS 工具函数
@@ -529,10 +533,12 @@ def step2_summarize():
                 result = json.loads(content)
                 # 保存处理结果
                 _oss_save_json(f"processed/{paper_title}.json", result)
-                # 立即出队并持久化，避免超时/崩溃导致队列状态丢失
+                # 立即推送 Telegram
+                _send_to_telegram(paper_title, result)
+                # 立即出队并持久化
                 unread_queue.remove(paper_title)
                 _oss_save_json("unread_queue.json", unread_queue)
-                print(f"✅ 总结完成 (队列剩余 {len(unread_queue)}): {paper_title}")
+                print(f"✅ 总结完成 + 已推送 TG (队列剩余 {len(unread_queue)}): {paper_title}")
             else:
                 print(f"❌ LLM 返回空内容: {paper_title}")
 
@@ -550,7 +556,7 @@ def step2_summarize():
 
 
 # ============================================================
-# Step 3: 多通道发送（凌晨 3:00）
+# 通道发送器（Step 2 总结完即推 Telegram，飞书可手动触发）
 # ============================================================
 
 _HEADERS = [
@@ -559,76 +565,6 @@ _HEADERS = [
     "对现有工作的批判性分析", "贡献", "方法", "数据集",
     "指标", "代码链接", "优势", "核心创新点", "研究目标",
 ]
-
-
-def step3_send(channels=None):
-    """
-    Step 3: 将处理完的论文通过多个通道发送。
-    event: {"step": "send", "channels": ["feishu", "telegram"]}
-    不指定 channels 则使用环境变量 SEND_CHANNELS。
-    """
-    if channels is None:
-        channels = DEFAULT_CHANNELS
-
-    print("=" * 50)
-    print(f"📤 Step 3: 发送论文 → 通道: {channels}")
-    print("=" * 50)
-
-    upload_papers = _oss_load_json("upload_papers.json", [], internal=False)
-
-    # 列出 processed/ 目录下所有独立处理结果文件
-    new_papers = []
-    try:
-        for obj in oss2.ObjectIterator(_oss_client(internal=False), prefix="processed/"):
-            if not obj.key.endswith(".json"):
-                continue
-            # 从文件名提取论文标题：processed/{title}.json → title
-            title = obj.key[len("processed/"):-len(".json")]
-            if title in upload_papers:
-                continue
-            info = _oss_load_json(obj.key, {}, internal=False)
-            if info:
-                new_papers.append((title, info))
-                upload_papers.append(title)
-    except Exception as e:
-        print(f"⚠️ 列举 processed/ 文件失败: {e}")
-
-    if not new_papers:
-        print("✅ 没有需要发送的新论文")
-        return
-
-    _oss_save_json("upload_papers.json", upload_papers, internal=False)
-
-    # 时间预算
-    _DEADLINE = time.monotonic() + 2880
-    _MIN_REMAINING = 30
-
-    for channel in channels:
-        channel = channel.strip().lower()
-        sender = _CHANNEL_SENDERS.get(channel)
-        if sender is None:
-            print(f"⚠️ 未知通道: {channel}，已跳过")
-            continue
-
-        print(f"\n--- 通过 {channel} 发送 ---")
-        ok = 0
-        for i, (title, info) in enumerate(new_papers):
-            remaining = _DEADLINE - time.monotonic()
-            if remaining < _MIN_REMAINING:
-                print(f"  ⏰ 剩余时间 {remaining:.0f}s，停止发送 (已发 {ok}/{len(new_papers)})")
-                break
-            if i > 0 and i % 5 == 0:
-                time.sleep(1)
-            if sender(title, info):
-                ok += 1
-        print(f"  {channel}: {ok}/{len(new_papers)} 成功")
-
-    print(f"\n🏁 Step 3 完成: {len(new_papers)} 篇 → {len(channels)} 个通道")
-
-
-# ============================================================
-# 通道发送器
-# ============================================================
 
 def _send_to_feishu(paper_title, paper_info):
     """飞书通道：格式化论文并发送。"""
@@ -717,10 +653,322 @@ def _fmt_telegram(title, info, html=True):
     return text[:4000] + ("\n\n... (截断)" if len(text) > 4000 else "")
 
 
-_CHANNEL_SENDERS = {
-    "feishu": _send_to_feishu,
-    "telegram": _send_to_telegram,
-}
+def _send_telegram_raw(text, parse_mode="Markdown"):
+    """发送任意文本到 Telegram，支持自动分段和 Markdown/纯文本回退。"""
+    bot = TELEGRAM_CONFIG["bot_token"]
+    cid = TELEGRAM_CONFIG["chat_id"]
+    if not bot or not cid:
+        print("  ⚠️ Telegram 未配置 (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)")
+        return False
+
+    max_len = 4000
+
+    # 按 max_len 分段，优先在段落边界断开
+    parts = []
+    remaining = text
+    while len(remaining) > max_len:
+        split_at = remaining.rfind("\n\n", 0, max_len)
+        if split_at == -1:
+            split_at = remaining.rfind("\n", 0, max_len)
+        if split_at == -1:
+            split_at = max_len
+        parts.append(remaining[:split_at].strip())
+        remaining = remaining[split_at:].strip()
+    parts.append(remaining)
+
+    total = len(parts)
+    ok = 0
+    for i, part in enumerate(parts):
+        prefix = f"📊 周报 ({i+1}/{total})\n\n" if total > 1 else "📊 周报\n\n"
+        body = prefix + part
+
+        r = requests.post(
+            f"https://api.telegram.org/bot{bot}/sendMessage",
+            json={"chat_id": cid, "text": body, "parse_mode": parse_mode,
+                  "disable_web_page_preview": True},
+            timeout=10,
+        ).json()
+
+        if r.get("ok"):
+            ok += 1
+        elif parse_mode and "parse" in str(r.get("description", "")).lower():
+            r2 = requests.post(
+                f"https://api.telegram.org/bot{bot}/sendMessage",
+                json={"chat_id": cid, "text": body, "disable_web_page_preview": True},
+                timeout=10,
+            ).json()
+            if r2.get("ok"):
+                ok += 1
+            else:
+                print(f"  ❌ Telegram 第{i+1}段发送失败: {r2.get('description', '?')}")
+        else:
+            print(f"  ❌ Telegram 第{i+1}段发送失败: {r.get('description', '?')}")
+
+    print(f"  Telegram: {ok}/{total} 段成功")
+    return ok == total
+
+
+# ============================================================
+# 滴答清单 API 封装
+# ============================================================
+
+_DIDA_DEVICE = json.dumps({
+    "platform": "web", "os": "Windows 10",
+    "device": "Chrome 86.0.4240.198", "name": "",
+    "version": 4130, "id": "6732f9fd4557ba2ce15c00eb",
+    "channel": "website", "campaign": "", "websocket": "",
+})
+
+_DIDA_LOGIN_URL = "https://api.dida365.com/api/v2/user/signon?wc=true&remember=true"
+_DIDA_COMPLETED_URL = "https://api.dida365.com/api/v2/project/{}/completed/?from={}&to={}&limit={}"
+
+
+def _dida_get_cookie():
+    """获取滴答清单 cookie，优先从 OSS 缓存读取，失效则重新登录。"""
+    # 尝试从 OSS 加载缓存的 cookie
+    cached = _oss_load_json("dida_cookie.json", {})
+    cookie = cached.get("cookie", "")
+    if cookie:
+        # 验证 cookie 是否仍有效：尝试请求已完成任务（只取 1 条）
+        test_url = _DIDA_COMPLETED_URL.format("all", "", "", 1)
+        headers = {"cookie": cookie, "x-device": _DIDA_DEVICE}
+        try:
+            resp = requests.get(test_url, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                print("✅ 滴答清单 cookie 缓存有效")
+                return cookie
+        except Exception:
+            pass
+        print("⚠️ 滴答清单 cookie 已失效，重新登录...")
+
+    # 重新登录
+    resp = requests.post(
+        url=_DIDA_LOGIN_URL,
+        headers={"x-device": _DIDA_DEVICE},
+        json={"password": DIDA_CONFIG["password"], "phone": DIDA_CONFIG["username"]},
+        timeout=15,
+    )
+
+    if resp.status_code != 200:
+        raise RuntimeError(f"滴答清单登录失败 (HTTP {resp.status_code}): {resp.content}")
+
+    cookie = ""
+    for name, value in resp.cookies.items():
+        cookie += f"{name}={value};"
+
+    # 缓存到 OSS
+    _oss_save_json("dida_cookie.json", {"cookie": cookie, "updated": datetime.datetime.now().isoformat()})
+    print("✅ 滴答清单登录成功，cookie 已缓存")
+    return cookie
+
+
+def _dida_get_completed_tasks(cookie, start_time=None, end_time=None, limit=200):
+    """获取滴答清单已完成任务。
+
+    Args:
+        cookie: 登录后的 cookie 字符串
+        start_time: 开始时间 (datetime)
+        end_time: 结束时间 (datetime)
+        limit: 最大返回数量
+
+    Returns:
+        list: 已完成任务列表
+    """
+    headers = {"cookie": cookie, "x-device": _DIDA_DEVICE}
+
+    projects = "all"
+    from_str = ""
+    to_str = ""
+
+    if start_time:
+        from_str = start_time.strftime("%Y-%m-%d") + "%20" + start_time.strftime("%H:%M:%S")
+    if end_time:
+        to_str = end_time.strftime("%Y-%m-%d") + "%20" + end_time.strftime("%H:%M:%S")
+
+    url = _DIDA_COMPLETED_URL.format(projects, from_str, to_str, limit)
+    resp = requests.get(url, headers=headers, timeout=15)
+
+    if resp.status_code == 200:
+        tasks = resp.json()
+        print(f"✅ 获取已完成任务: {len(tasks) if isinstance(tasks, list) else '?'} 条")
+        return tasks if isinstance(tasks, list) else []
+    else:
+        print(f"⚠️ 获取已完成任务失败 (HTTP {resp.status_code}): {resp.content}")
+        return []
+
+
+# ============================================================
+# Step 4: 每周总结（周一 08:00）
+# ============================================================
+
+def step4_weekly_summary():
+    """
+    Step 4: 每周总结 - 从滴答清单获取本周已完成任务，通过 LLM 生成周报。
+    定时触发: 每周一 08:00
+
+    保存到 OSS weekly.json，并发送到 Telegram。
+    """
+    print("=" * 50)
+    print("📊 Step 4: 每周总结（滴答清单）")
+    print("=" * 50)
+
+    now = datetime.datetime.now()
+    week_ago = now - datetime.timedelta(days=7)
+    two_weeks_ago = now - datetime.timedelta(days=14)
+
+    # 1. 获取滴答清单已完成任务（本周 + 上周原始数据用于对比）
+    cookie = _dida_get_cookie()
+    tasks_this_week = _dida_get_completed_tasks(cookie, start_time=week_ago, end_time=now)
+
+    if not tasks_this_week:
+        print("✅ 本周没有已完成任务，跳过生成")
+        return
+
+    print(f"📋 本周已完成任务: {len(tasks_this_week)} 条")
+
+    # 上周原始任务数据（用于 LLM 做数据驱动的对比）
+    tasks_last_week = _dida_get_completed_tasks(cookie, start_time=two_weeks_ago, end_time=week_ago)
+    print(f"📋 上周已完成任务: {len(tasks_last_week)} 条（用于对比）")
+
+    # 2. 加载历史周报
+    weekly = _oss_load_json("weekly.json", {})
+
+    # 3. 初始化 LLM 客户端（复用 OpenRouter 配置）
+    llm_client = OpenAI(
+        api_key=LLM_CONFIG["api_key"],
+        base_url=LLM_CONFIG["base_url"],
+        timeout=120.0,
+    )
+
+    system_prompt = """
+# 角色
+你是「周报生成助手」，擅长从任务数据中提炼关键信息，生成结构化中文周报。
+
+# 输入说明
+用户会提供滴答清单任务数据，统计范围为自然周（周一至周日），可能包含字段：
+任务名称、所属清单/标签、计划耗时、实际耗时、完成状态、执行时间段、关联笔记。
+- 若某类字段缺失（如无笔记、无计划耗时），对应板块统一标注「本周无相关数据」，
+  不得推测或编造。
+- 若未提供上周数据，第 7 板块统一输出：「未提供上周数据，暂无法对比」。
+
+# 统一计算口径（保证每周结果可横向对比）
+1. 任务总耗时 = 本周已完成任务的实际耗时之和（单位：小时，保留 1 位小数）
+2. 日均耗时 = 总耗时 ÷ 7
+3. 完成率 = 已完成任务数 ÷ 本周计划任务总数 × 100%
+4. 高频时间段：按任务实际开始时间归入三个时段
+   （上午 6:00–12:00 / 下午 12:00–18:00 / 晚上 18:00–24:00），
+   取任务数占比最高的时段并标注占比
+5. 偏差率 =（实际耗时 − 计划耗时）÷ 计划耗时 × 100%
+   （正数为超时，负数为提前，保留整数）
+6. 综合效率评分（10 分制）：
+   - 完成率得分（0–4 分）= 完成率 × 4
+   - 时间把控得分（0–4 分）：平均偏差率 ≤10% 计 4 分；≤25% 计 3 分；
+     ≤50% 计 2 分；＞50% 计 1 分
+   - 记录质量得分（0–2 分）= 有笔记的任务数 ÷ 已完成任务数 × 2
+   - 星级换算：总分 ÷ 2 四舍五入，★ 计 1 星、☆ 计 0 星（共 5 星）
+
+# 输出要求
+- Markdown 格式，中文，语言简洁专业
+- 第一行固定输出：**⏰ 以下内容由AI自动生成，仅供参考**
+- 严格按下方模板输出，板块数量、顺序、条数上限每周保持一致，不自行增减
+- 所有数字必须来自输入数据或按上述口径计算，禁止估算和编造
+- 待改进点与建议必须具体可执行，禁止空泛表述（如"继续努力"）
+
+# 输出模板（每周固定结构）
+
+## 1. 本周概览
+一句话概括本周状态（≤30 字，如「高产但超时明显的一周」）。
+● 完成任务 xx/xx 项（完成率 xx%）｜总耗时 xx 小时｜效率评分 x/10
+
+## 2. 时间分析
+● 任务总耗时：xx 小时
+● 日均耗时：xx 小时
+● 高频时间段：xx（任务占比 xx%）
+
+## 3. 效率分析
+| 任务类型 | 计划耗时 | 实际耗时 | 偏差率 |
+| --- | --- | --- | --- |
+（按清单/标签归类，口径每周一致）
+综合效率评分：★★★☆☆（x/10）
+效率问题诊断（≤2 条：指出超时最严重或完成率最低的类型及可能原因）：
+● xx
+
+## 4. 笔记分析
+高频关键词（3–5 个）：xx（出现 x 次）
+核心结论（≤2 条）：
+● xx
+
+## 5. 感想分析
+✅ 积极经验（≤2 条）：
+● xx
+⚠️ 待改进点（≤2 条）：
+● xx
+
+## 6. 下周建议（每条一句话、可直接执行）
+1. 时间分配：xx
+2. 工具优化：xx
+3. 习惯调整：xx
+
+## 7. 上周对比
+固定对比三个指标（用 ↑/↓/→ 标注变化方向和幅度）：
+● 总耗时：xx h → xx h（↑xx%）
+● 完成率：xx% → xx%（↓x 个百分点）
+● 效率评分：x → x（→）
+趋势结论（一句话）：xx
+
+"""
+
+    # 获取上周周报用于对比
+    previous_weeks = sorted(weekly.keys(), reverse=True)
+    last_week_content = weekly.get(previous_weeks[0], "") if previous_weeks else ""
+
+    user_prompt = f"""
+请根据以下滴答清单API返回的任务数据生成本周周报：
+
+【本周任务数据 - 统计范围：{week_ago.strftime('%Y-%m-%d')} 至 {now.strftime('%Y-%m-%d')}】
+{json.dumps(tasks_this_week, ensure_ascii=False, indent=2)}
+
+【上周任务数据 - 用于第 7 板块对比，统计范围：{two_weeks_ago.strftime('%Y-%m-%d')} 至 {week_ago.strftime('%Y-%m-%d')}】
+{json.dumps(tasks_last_week, ensure_ascii=False, indent=2) if tasks_last_week else "（无上周数据）"}
+
+【上周周报内容 - 用于参考】
+{last_week_content or "（无上周周报）"}
+
+"""
+
+    if len(user_prompt) > 100000:
+        print("⚠️ 数据过长，截断处理")
+        user_prompt = user_prompt[:100000]
+
+    try:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        response = llm_client.chat.completions.create(
+            model=LLM_CONFIG["model"],
+            messages=messages,
+        )
+
+        if response.choices[0].message.content:
+            result = response.choices[0].message.content
+            print(f"✅ 周报生成成功 ({len(result)} 字符)")
+
+            # 4. 保存到 OSS
+            date_key = now.strftime("%Y-%m-%d")
+            weekly[date_key] = result
+            _oss_save_json("weekly.json", weekly)
+
+            # 5. 发送到 Telegram
+            _send_telegram_raw(result)
+        else:
+            print("❌ LLM 返回空内容")
+
+    except Exception as e:
+        print(f"❌ 周报生成失败: {e}")
+
+    print(f"\n🏁 Step 4 完成")
 
 
 # ============================================================
@@ -771,9 +1019,9 @@ def step_ccf_check():
 # 步骤路由表: step → (func, 从 event 提取的额外参数)
 _STEP_MAP = {
     "download_extract": (step1_download_and_extract, []),
-    "summarize":        (step2_summarize,         []),
-    "send":             (step3_send,              ["channels"]),
-    "ccf_check":        (step_ccf_check,          []),
+    "summarize":        (step2_summarize,            []),
+    "weekly_summary":   (step4_weekly_summary,       []),
+    "ccf_check":        (step_ccf_check,             []),
 }
 
 
@@ -783,14 +1031,9 @@ def handler(event, context=None):
 
     event["step"] 指定步骤:
       "download_extract"  下载论文 + 抽取文本
-      "summarize"         大模型总结
-      "send"              多通道发送 (可选 channels)
+      "summarize"         大模型总结 + Telegram 推送
+      "weekly_summary"    每周总结
       "ccf_check"         CCF 投稿截止提醒
-
-    s.yaml 定时触发器 (Asia/Shanghai):
-      18:00 → {"step": "download_extract"}
-      01:00 → {"step": "summarize"}
-      07:00 → {"step": "send", "channels": ["telegram"]}
     """
     if isinstance(event, bytes):
         event = event.decode("utf-8")

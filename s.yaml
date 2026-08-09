@@ -53,6 +53,9 @@ resources:
         # Telegram 配置
         TELEGRAM_BOT_TOKEN: ${env(TELEGRAM_BOT_TOKEN)}
         TELEGRAM_CHAT_ID: ${env(TELEGRAM_CHAT_ID)}
+        # 滴答清单配置
+        DIDA_USERNAME: ${env(DIDA_USERNAME)}
+        DIDA_PASSWORD: ${env(DIDA_PASSWORD)}
         # 默认发送通道
         SEND_CHANNELS: feishu
       triggers:
@@ -74,12 +77,12 @@ resources:
             cronExpression: CRON_TZ=Asia/Shanghai 0 0 2,10,18 * * *
             enable: true
             payload: '{"step":"summarize"}'
-        # ---- Step 3: 多通道发送 (每天 3 次: 05:00 / 13:00 / 21:00) ----
-        - triggerName: step3-send
+        # ---- Step 4: 每周总结 (每周一 08:00) ----
+        - triggerName: step4-weekly-summary
           triggerType: timer
           qualifier: LATEST
           description: ''
           triggerConfig:
-            cronExpression: CRON_TZ=Asia/Shanghai 0 0 5,13,21 * * *
+            cronExpression: CRON_TZ=Asia/Shanghai 0 0 8 * * 1
             enable: true
-            payload: '{"step":"send","channels":["telegram"]}'
+            payload: '{"step":"weekly_summary"}'
