@@ -101,8 +101,8 @@ def step1_download_and_extract():
                     break
 
                 # 过滤旧论文：只保留最近 30 天
-    if result.published.replace(tzinfo=None) < datetime.datetime.now() - datetime.timedelta(days=30):
-        continue
+                if result.published.replace(tzinfo=None) < datetime.datetime.now() - datetime.timedelta(days=30):
+                    continue
 
                 # 生成安全的文件名（也用作论文唯一 ID）
                 safe_title = _safe_title(result.title)
