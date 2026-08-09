@@ -58,7 +58,6 @@ resources:
         OPENROUTER_API_KEY: ${env(OPENROUTER_API_KEY)}
         OPENROUTER_BASE_URL: https://openrouter.ai/api/v1
         OPENROUTER_MODEL: openrouter/free
-        MANAGE_PASSWORD: ${env(MANAGE_PASSWORD)}
         # Telegram 配置
         TELEGRAM_BOT_TOKEN: ${env(TELEGRAM_BOT_TOKEN)}
         TELEGRAM_CHAT_ID: ${env(TELEGRAM_CHAT_ID)}
@@ -72,7 +71,7 @@ resources:
         - triggerName: http-api
           triggerType: http
           qualifier: LATEST
-          description: 'Flask API: upload_paper / keywords_manager'
+          description: 'Telegram Bot webhook'
           triggerConfig:
             authType: anonymous
             methods:
@@ -107,3 +106,12 @@ resources:
             cronExpression: CRON_TZ=Asia/Shanghai 0 0 8 * * 1
             enable: true
             payload: '{"step":"weekly_summary"}'
+        # ---- Telegram 消息自动清理 (每周一 09:00) ----
+        - triggerName: cleanup-tg-messages
+          triggerType: timer
+          qualifier: LATEST
+          description: '每周清理到期的 Bot 回复消息'
+          triggerConfig:
+            cronExpression: CRON_TZ=Asia/Shanghai 7 0 9 * * 1
+            enable: true
+            payload: '{"step":"cleanup_tg"}'

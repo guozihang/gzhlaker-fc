@@ -1,5 +1,5 @@
 """
-Flask API 应用 — 论文上传、关键词管理、静态文件服务。
+Telegram Bot webhook — PDF 上传、关键词管理。
 由 main.handler 在 HTTP 请求时延迟导入，定时器冷启动完全不加载此模块。
 """
 import base64
@@ -10,7 +10,7 @@ import sys
 import traceback
 
 import requests
-from flask import Flask, request, jsonify, render_template_string, send_from_directory
+from flask import Flask, request, jsonify
 
 from oss_utils import (
     _oss_load_json, _oss_save_json, _oss_file_exists,
@@ -18,28 +18,16 @@ from oss_utils import (
 )
 from pdf_utils import _extract_pdf_text
 from channels import _send_telegram_message
+from config import TELEGRAM_CONFIG
 
 
 # ============================================================
 # Flask 应用
 # ============================================================
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-app = Flask(__name__, static_folder=os.path.join(_BASE_DIR, "static"), static_url_path="")
+app = Flask(__name__)
 
-
-# CORS — 用 after_request 替代 flask-cors，减少依赖
-@app.after_request
-def _add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-    return response
-
-
-# ============================================================
-# 环境变量
-# ============================================================
-MANAGE_PASSWORD = os.environ.get("MANAGE_PASSWORD", "your_secure_password")
+TELEGRAM_BOT_TOKEN = TELEGRAM_CONFIG["bot_token"]
+TELEGRAM_CHAT_ID = TELEGRAM_CONFIG["chat_id"]
 
 DEFAULT_KEYWORDS = [
     '"sign language"',
@@ -62,13 +50,11 @@ def _fc_event_to_wsgi(event):
     ctx = event.get("requestContext", {})
     http = ctx.get("http", {})
     method = http.get("method", "GET")
-    # requestContext.http.path 是已解码路径，rawPath 是 URL 编码的
     path = http.get("path") or event.get("rawPath", "/")
 
     headers = event.get("headers", {}) or {}
     query_params = event.get("queryParameters", {}) or {}
 
-    # 构建 query string
     if query_params:
         qs_parts = []
         for k, v in query_params.items():
@@ -82,7 +68,6 @@ def _fc_event_to_wsgi(event):
         raw_qs = event.get("rawQueryString", "")
         qs = raw_qs.lstrip("?") if raw_qs else ""
 
-    # Body: FC 可能 base64 编码
     body = event.get("body", "") or ""
     if event.get("isBase64Encoded"):
         raw_body = base64.b64decode(body)
@@ -153,7 +138,6 @@ def handle_http_event(event):
             "isBase64Encoded": False,
         }
 
-    # 收集响应头，丢弃 hop-by-hop 头
     out_headers = {}
     for k, v in header_box:
         lk = k.lower()
@@ -178,332 +162,181 @@ def handle_http_event(event):
 
 
 # ============================================================
-# 路由: 论文上传
+# Bot 命令处理
 # ============================================================
 
-@app.route("/upload_paper", methods=["GET", "POST", "PUT", "DELETE"])
-def upload_paper():
-    """上传论文 PDF，自动提取文本并加入 unread_queue 队列。"""
-    try:
-        pdf_file = request.files.get("pdf_file")
-        if not pdf_file:
-            return jsonify({"error": "缺少 pdf_file 字段"}), 400
+def _handle_text(chat_id, text):
+    """处理 Telegram Bot 文本命令。"""
+    cmd = text.strip().lower()
 
-        file_name = pdf_file.filename
-        safe_title = _safe_title(file_name)
-        pdf_dir = "/tmp/papers"
-        os.makedirs(pdf_dir, exist_ok=True)
-        pdf_local_path = os.path.join(pdf_dir, f"{safe_title}.pdf")
-        pdf_oss_path = f"papers/{safe_title}.pdf"
+    if cmd in ("/help", "/start", "help"):
+        _send_telegram_message(chat_id,
+            "📋 可用命令：\n\n"
+            "/keywords — 查看当前关键词\n"
+            "/add <关键词> — 添加关键词\n"
+            "/delete <关键词> — 删除关键词\n"
+            "/num — 查看队列篇数\n"
+            "\n直接发送 PDF 文件即可上传并加入待读队列。"
+        )
 
-        # 读取文件内容
-        file_content = pdf_file.read()
+    elif cmd == "/keywords":
+        keywords = _oss_load_json("keywords.json", DEFAULT_KEYWORDS)
+        lines = [f"• {kw}" for kw in keywords]
+        _send_telegram_message(chat_id, "📌 当前关键词：\n\n" + "\n".join(lines))
 
-        # 查重：是否已在队列或已提取文本
+    elif cmd.startswith("/add "):
+        kw = text.split("/add ", 1)[1].strip()
+        if not kw:
+            _send_telegram_message(chat_id, "用法: /add <关键词>")
+            return
+        keywords = _oss_load_json("keywords.json", DEFAULT_KEYWORDS)
+        formatted = f'"{kw}"'
+        if formatted in keywords:
+            _send_telegram_message(chat_id, f"⚠️ 「{kw}」已存在")
+        else:
+            keywords.append(formatted)
+            _oss_save_json("keywords.json", keywords)
+            _send_telegram_message(chat_id, f"✅ 已添加: {formatted}")
+
+    elif cmd.startswith("/delete ") or cmd.startswith("/remove "):
+        kw = text.split(" ", 1)[1].strip()
+        if not kw:
+            _send_telegram_message(chat_id, "用法: /delete <关键词>")
+            return
+        keywords = _oss_load_json("keywords.json", DEFAULT_KEYWORDS)
+        formatted = f'"{kw}"'
+        if formatted in keywords:
+            keywords.remove(formatted)
+            _oss_save_json("keywords.json", keywords)
+            _send_telegram_message(chat_id, f"✅ 已删除: {formatted}")
+        else:
+            _send_telegram_message(chat_id, f"⚠️ 未找到: {formatted}")
+
+    elif cmd == "/num":
         unread_queue = _oss_load_json("unread_queue.json", [])
-        if safe_title in unread_queue or _oss_file_exists(f"extracted_texts/{safe_title}.json"):
-            return jsonify({"message": "论文已存在", "file_name": file_name})
+        _send_telegram_message(chat_id, f"📬 待总结队列: {len(unread_queue)} 篇")
 
-        # 保存到本地 /tmp
-        with open(pdf_local_path, "wb") as f:
-            f.write(file_content)
+    else:
+        _send_telegram_message(chat_id,
+            "发送 PDF 文件即可上传，或输入 /help 查看命令。"
+        )
 
-        # 上传 PDF 到 OSS（如不存在）
-        if not _oss_file_exists(pdf_oss_path):
-            _oss_upload_file(pdf_local_path, pdf_oss_path)
 
-        # 提取文本
-        text = _extract_pdf_text(pdf_local_path, safe_title)
-        if text:
-            _oss_save_json(
-                f"extracted_texts/{safe_title}.json",
-                {"title": safe_title, "text": text},
-            )
+# ============================================================
+# PDF 上传处理
+# ============================================================
 
-        # 加入队列
+def _handle_pdf(chat_id, document):
+    """处理 PDF 上传：下载 → OSS → 抽取文本 → 入队。"""
+    file_name = document.get("file_name", "unknown.pdf")
+    file_id = document.get("file_id")
+    mime_type = document.get("mime_type", "")
+
+    if not file_name.lower().endswith(".pdf") and mime_type != "application/pdf":
+        _send_telegram_message(chat_id, f"⚠️ 仅支持 PDF，当前: {file_name}")
+        return
+
+    if not file_id or not TELEGRAM_BOT_TOKEN:
+        _send_telegram_message(chat_id, "❌ 服务配置错误")
+        return
+
+    safe_title = _safe_title(file_name)
+
+    if _oss_file_exists(f"extracted_texts/{safe_title}.json"):
+        _send_telegram_message(chat_id, f"⚠️ 「{file_name}」已在队列中")
+        return
+
+    # 1. 获取 Telegram 文件下载路径
+    tg_resp = requests.get(
+        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile",
+        params={"file_id": file_id}, timeout=10,
+    ).json()
+    if not tg_resp.get("ok"):
+        _send_telegram_message(chat_id, f"❌ 获取文件失败: {tg_resp.get('description', '?')}")
+        return
+
+    download_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{tg_resp['result']['file_path']}"
+
+    # 2. 下载
+    pdf_resp = requests.get(download_url, timeout=120)
+    if pdf_resp.status_code != 200:
+        _send_telegram_message(chat_id, f"❌ 下载失败 (HTTP {pdf_resp.status_code})")
+        return
+
+    pdf_dir = "/tmp/papers"
+    os.makedirs(pdf_dir, exist_ok=True)
+    pdf_local = os.path.join(pdf_dir, f"{safe_title}.pdf")
+    with open(pdf_local, "wb") as f:
+        f.write(pdf_resp.content)
+
+    # 3. 上传 OSS
+    pdf_oss = f"papers/{safe_title}.pdf"
+    if not _oss_file_exists(pdf_oss):
+        _oss_upload_file(pdf_local, pdf_oss)
+
+    # 4. 抽取文本
+    text = _extract_pdf_text(pdf_local, safe_title)
+    if text:
+        _oss_save_json(f"extracted_texts/{safe_title}.json", {"title": safe_title, "text": text})
+
+    # 5. 入队
+    unread_queue = _oss_load_json("unread_queue.json", [])
+    if safe_title not in unread_queue:
         unread_queue.append(safe_title)
         _oss_save_json("unread_queue.json", unread_queue)
 
-        # 清理临时文件
-        if os.path.exists(pdf_local_path):
-            os.remove(pdf_local_path)
+    if os.path.exists(pdf_local):
+        os.remove(pdf_local)
 
-        return jsonify({"message": "论文上传成功", "file_name": file_name})
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({"error": f"服务器内部错误: {str(e)}"}), 500
-
-
-# ============================================================
-# 路由: 关键词管理 Web UI
-# ============================================================
-
-KEYWORDS_MANAGER_HTML = r"""
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>关键词管理 - Element UI</title>
-    <link rel="stylesheet" href="https://unpkg.com/element-ui/lib/theme-chalk/index.css">
-    <style>
-        body { margin: 0; padding: 20px; background-color: #f0f2f5; }
-        .el-card { max-width: 800px; margin: 0 auto; }
-        .keyword-item { display: flex; align-items: center; margin-bottom: 12px; }
-        .keyword-item .el-input { flex: 1; margin-right: 10px; }
-        .action-buttons { margin-top: 20px; display: flex; justify-content: space-between; }
-        .password-section { margin-top: 24px; padding-top: 24px; border-top: 1px solid #ebeef5; }
-    </style>
-</head>
-<body>
-    <div id="app">
-        <el-card>
-            <template #header>
-                <div class="card-header"><span>关键词管理</span></div>
-            </template>
-            <div id="keywords-container">
-                <div class="keyword-item" v-for="(kw, idx) in localKeywords" :key="idx">
-                    <el-input v-model="localKeywords[idx]" placeholder="请输入关键词"></el-input>
-                    <el-button type="danger" plain icon="el-icon-delete" @click="removeKeyword(idx)"></el-button>
-                </div>
-            </div>
-            <div class="action-buttons">
-                <el-button type="primary" icon="el-icon-plus" @click="addKeyword">添加关键词</el-button>
-            </div>
-            <div class="password-section">
-                <h3 style="margin-bottom: 16px;">更新关键词</h3>
-                <el-form :inline="true">
-                    <el-form-item label="密码">
-                        <el-input v-model="password" type="password" placeholder="请输入密码" show-password></el-input>
-                    </el-form-item>
-                    <el-form-item>
-                        <el-button type="success" @click="saveKeywords" :loading="saving">保存更改</el-button>
-                    </el-form-item>
-                </el-form>
-            </div>
-        </el-card>
-    </div>
-    <script src="https://unpkg.com/vue/dist/vue.js"></script>
-    <script src="https://unpkg.com/element-ui/lib/index.js"></script>
-    <script>
-        new Vue({
-            el: '#app',
-            data() {
-                return {
-                    localKeywords: {{ keywords_json | safe }},
-                    password: '',
-                    saving: false
-                };
-            },
-            methods: {
-                addKeyword() { this.localKeywords.push(''); },
-                removeKeyword(index) {
-                    this.$confirm('确定要移除这个关键词吗？', '提示', {
-                        confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning'
-                    }).then(() => {
-                        this.localKeywords.splice(index, 1);
-                        this.$message({ type: 'success', message: '移除成功' });
-                    }).catch(() => {});
-                },
-                saveKeywords() {
-                    if (!this.password) { this.$message.warning('请输入密码'); return; }
-                    var keywords = this.localKeywords.filter(function(k) { return k.trim() !== ''; });
-                    if (keywords.length === 0) { this.$message.warning('关键词列表不能为空'); return; }
-                    this.saving = true;
-                    fetch('/update_keywords', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ keywords: keywords, password: this.password })
-                    }).then(function(r) { return r.json(); }).then((data) => {
-                        this.saving = false;
-                        if (data.success) {
-                            this.$message({ type: 'success', message: '关键词更新成功！' });
-                            this.password = '';
-                        } else {
-                            this.$message.error('错误: ' + data.message);
-                        }
-                    }).catch((error) => {
-                        this.saving = false;
-                        this.$message.error('保存失败: 网络错误');
-                        console.error('Error:', error);
-                    });
-                }
-            }
-        });
-    </script>
-</body>
-</html>
-"""
-
-
-@app.route("/keywords_manager")
-def keywords_manager():
-    """关键词管理 Web UI。"""
-    keywords = _oss_load_json("keywords.json", DEFAULT_KEYWORDS)
-    return render_template_string(
-        KEYWORDS_MANAGER_HTML,
-        keywords_json=json.dumps(keywords, ensure_ascii=False),
+    _send_telegram_message(chat_id,
+        f"✅ 上传完成！\n\n"
+        f"📄 {file_name}\n"
+        f"📝 {len(text) if text else 0} 字符\n"
+        f"📬 队列共 {len(unread_queue)} 篇"
     )
-
-
-@app.route("/update_keywords", methods=["POST"])
-def update_keywords():
-    """更新关键词（需管理密码）。"""
-    try:
-        data = request.get_json(force=True)
-        keywords = data.get("keywords", [])
-        password = data.get("password", "")
-
-        if password != MANAGE_PASSWORD:
-            return jsonify({"success": False, "message": "密码错误"})
-
-        if not isinstance(keywords, list):
-            return jsonify({"success": False, "message": "关键词必须是数组格式"})
-
-        if _oss_save_json("keywords.json", keywords):
-            return jsonify({"success": True, "message": "关键词更新成功"})
-        else:
-            return jsonify({"success": False, "message": "保存失败，请重试"})
-    except Exception as e:
-        return jsonify({"success": False, "message": f"服务器内部错误: {str(e)}"}), 500
-
-
-@app.route("/get_keywords")
-def get_keywords():
-    """获取当前关键词列表。"""
-    keywords = _oss_load_json("keywords.json", DEFAULT_KEYWORDS)
-    return jsonify({"keywords": keywords})
+    print(f"✅ Telegram PDF 上传: {file_name} (chat_id={chat_id})")
 
 
 # ============================================================
-# 路由: Telegram Bot Webhook — 接收 PDF 上传
+# 路由: Telegram Webhook
 # ============================================================
-
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-
 
 @app.route("/telegram_webhook", methods=["POST"])
 def telegram_webhook():
-    """Telegram Bot webhook：接收用户上传的 PDF，自动处理并加入队列。"""
+    """Telegram Bot webhook 入口。"""
     try:
         update = request.get_json(force=True)
-        print(f"📨 Telegram webhook: {json.dumps(update, ensure_ascii=False)[:500]}")
+        print(f"📨 Telegram: {json.dumps(update, ensure_ascii=False)[:300]}")
 
         message = update.get("message", {})
         chat = message.get("chat", {})
         chat_id = chat.get("id")
-
         if not chat_id:
             return jsonify({"ok": True})
 
-        document = message.get("document")
-        if not document:
-            _send_telegram_message(chat_id, "请直接发送 PDF 文件，我会自动提取文本并加入待读队列。")
+        # 仅响应授权用户
+        if str(chat_id) != TELEGRAM_CHAT_ID:
+            print(f"⛔ 未授权 chat_id: {chat_id}")
             return jsonify({"ok": True})
 
-        file_name = document.get("file_name", "unknown.pdf")
-        mime_type = document.get("mime_type", "")
-        file_id = document.get("file_id")
-
-        # 只接受 PDF
-        if not file_name.lower().endswith(".pdf") and mime_type != "application/pdf":
-            _send_telegram_message(chat_id, f"⚠️ 仅支持 PDF 文件，当前文件: {file_name}（{mime_type}）")
-            return jsonify({"ok": True})
-
-        if not file_id or not TELEGRAM_BOT_TOKEN:
-            _send_telegram_message(chat_id, "❌ 服务配置错误，请联系管理员。")
-            return jsonify({"ok": True})
-
-        safe_title = _safe_title(file_name)
-
-        # 查重
-        if _oss_file_exists(f"extracted_texts/{safe_title}.json"):
-            _send_telegram_message(chat_id, f"⚠️ 「{file_name}」已存在于队列中，无需重复上传。")
-            return jsonify({"ok": True})
-
-        # Step 1: 通过 Telegram API 获取文件下载路径
-        tg_resp = requests.get(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile",
-            params={"file_id": file_id},
-            timeout=10,
-        ).json()
-
-        if not tg_resp.get("ok"):
-            _send_telegram_message(chat_id, f"❌ 获取文件信息失败: {tg_resp.get('description', '未知错误')}")
-            return jsonify({"ok": True})
-
-        file_path = tg_resp["result"]["file_path"]
-        download_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
-
-        # Step 2: 下载 PDF
-        pdf_resp = requests.get(download_url, timeout=120)
-        if pdf_resp.status_code != 200:
-            _send_telegram_message(chat_id, f"❌ 下载文件失败 (HTTP {pdf_resp.status_code})")
-            return jsonify({"ok": True})
-
-        pdf_dir = "/tmp/papers"
-        os.makedirs(pdf_dir, exist_ok=True)
-        pdf_local_path = os.path.join(pdf_dir, f"{safe_title}.pdf")
-        with open(pdf_local_path, "wb") as f:
-            f.write(pdf_resp.content)
-
-        # Step 3: 上传到 OSS
-        pdf_oss_path = f"papers/{safe_title}.pdf"
-        if not _oss_file_exists(pdf_oss_path):
-            _oss_upload_file(pdf_local_path, pdf_oss_path)
-
-        # Step 4: 抽取文本
-        text = _extract_pdf_text(pdf_local_path, safe_title)
+        # 文本命令
+        text = message.get("text", "")
         if text:
-            _oss_save_json(
-                f"extracted_texts/{safe_title}.json",
-                {"title": safe_title, "text": text},
-            )
+            _handle_text(chat_id, text)
+            return jsonify({"ok": True})
 
-        # Step 5: 加入队列
-        unread_queue = _oss_load_json("unread_queue.json", [])
-        if safe_title not in unread_queue:
-            unread_queue.append(safe_title)
-            _oss_save_json("unread_queue.json", unread_queue)
+        # PDF 上传
+        document = message.get("document")
+        if document:
+            _handle_pdf(chat_id, document)
+            return jsonify({"ok": True})
 
-        # 清理
-        if os.path.exists(pdf_local_path):
-            os.remove(pdf_local_path)
-
-        # Step 6: 回复用户
-        _send_telegram_message(
-            chat_id,
-            f"✅ 上传完成！\n\n📄 论文: {file_name}\n📝 已提取 {len(text) if text else 0} 字符\n📬 已加入待总结队列（当前共 {len(unread_queue)} 篇）",
-        )
-        print(f"✅ Telegram 上传处理完成: {file_name} (chat_id={chat_id})")
+        # 非文本非文件
+        _send_telegram_message(chat_id, "发送 PDF 文件即可上传，或输入 /help 查看命令。")
 
     except Exception as e:
         traceback.print_exc()
-        chat_id = (update.get("message", {}).get("chat", {}).get("id")) if 'update' in dir() else None
-        if chat_id:
-            _send_telegram_message(chat_id, f"❌ 处理失败: {e}")
     return jsonify({"ok": True})
-
-
-# ============================================================
-# 路由: 静态文件
-# ============================================================
-
-@app.route("/", defaults={"path": ""})
-@app.route("/<path:path>")
-def index(path):
-    """静态文件服务。"""
-    static_dir = os.path.join(_BASE_DIR, "static")
-    if path and os.path.exists(os.path.join(static_dir, path)):
-        try:
-            return send_from_directory(static_dir, path)
-        except Exception:
-            pass
-    # 兜底：返回 index.html（SPA 兼容）
-    index_path = os.path.join(static_dir, "index.html")
-    if os.path.exists(index_path):
-        return send_from_directory(static_dir, "index.html")
-    return jsonify({"message": "gzhlaker FC API", "routes": ["/upload_paper", "/keywords_manager", "/get_keywords", "/telegram_webhook"]})
 
 
 # ============================================================

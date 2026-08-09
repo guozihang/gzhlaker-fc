@@ -3,10 +3,12 @@
 """
 
 import datetime
+import time
 
 import requests
 
 from config import TELEGRAM_CONFIG
+from oss_utils import _oss_load_json, _oss_save_json
 
 
 _HEADERS = [
@@ -117,7 +119,7 @@ def _send_telegram_raw(text, parse_mode="Markdown"):
 
 
 def _send_telegram_message(chat_id, text, parse_mode=None):
-    """发送文本到指定 Telegram 会话（webhook 回复用）。"""
+    """发送文本到指定 Telegram 会话，自动在 10 分钟后删除。"""
     bot = TELEGRAM_CONFIG["bot_token"]
     if not bot:
         print("  ⚠️ Telegram 未配置 (TELEGRAM_BOT_TOKEN)")
@@ -129,15 +131,65 @@ def _send_telegram_message(chat_id, text, parse_mode=None):
         timeout=10,
     ).json()
 
-    if r.get("ok"):
-        return True
     # Markdown 解析失败则纯文本重试
-    if parse_mode and "parse" in str(r.get("description", "")).lower():
-        r2 = requests.post(
+    if not r.get("ok") and parse_mode and "parse" in str(r.get("description", "")).lower():
+        r = requests.post(
             f"https://api.telegram.org/bot{bot}/sendMessage",
             json={"chat_id": chat_id, "text": text},
             timeout=10,
         ).json()
-        return r2.get("ok", False)
+
+    if r.get("ok"):
+        msg_id = r["result"]["message_id"]
+        _queue_delete(chat_id, msg_id)
+        return True
     print(f"  ❌ Telegram 回复失败: {r.get('description', '?')}")
     return False
+
+
+def _queue_delete(chat_id, message_id, delay_seconds=600):
+    """将消息 ID 加入待删除队列（OSS），10 分钟后由定时器清理。"""
+    pending = _oss_load_json("tg_pending_delete.json", [])
+    pending.append({
+        "chat_id": str(chat_id),
+        "message_id": message_id,
+        "delete_after": time.time() + delay_seconds,
+    })
+    _oss_save_json("tg_pending_delete.json", pending)
+
+
+def _cleanup_expired_messages():
+    """批量删除到期的 Telegram 消息。"""
+    bot = TELEGRAM_CONFIG["bot_token"]
+    if not bot:
+        return
+
+    pending = _oss_load_json("tg_pending_delete.json", [])
+    if not pending:
+        return
+
+    now = time.time()
+    remaining = []
+    deleted = 0
+
+    for item in pending:
+        if item["delete_after"] <= now:
+            try:
+                r = requests.post(
+                    f"https://api.telegram.org/bot{bot}/deleteMessage",
+                    json={"chat_id": item["chat_id"], "message_id": item["message_id"]},
+                    timeout=5,
+                ).json()
+                if r.get("ok"):
+                    deleted += 1
+                else:
+                    # 消息可能已被手动删除或超过 48h，不再重试
+                    pass
+            except Exception:
+                remaining.append(item)  # 网络错误，保留重试
+        else:
+            remaining.append(item)
+
+    _oss_save_json("tg_pending_delete.json", remaining)
+    if deleted:
+        print(f"🧹 已清理 {deleted} 条 Telegram 消息")
