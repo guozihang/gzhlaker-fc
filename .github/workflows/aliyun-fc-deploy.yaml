@@ -20,6 +20,8 @@
 #   - TELEGRAM_CHAT_ID            Telegram Chat ID（可选）
 #   - DIDA_PHONE                  滴答清单手机号
 #   - DIDA_PASSWORD               滴答清单密码
+#   - FEISHU_ENCRYPT_KEY          飞书事件订阅 Encrypt Key
+#   - MANAGE_PASSWORD             关键词管理页面密码
 # ============================================================
 
 name: Deploy to Aliyun FC
@@ -71,6 +73,8 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DIDA_PHONE: ${{ secrets.DIDA_PHONE }}
           DIDA_PASSWORD: ${{ secrets.DIDA_PASSWORD }}
+          FEISHU_ENCRYPT_KEY: ${{ secrets.FEISHU_ENCRYPT_KEY }}
+          MANAGE_PASSWORD: ${{ secrets.MANAGE_PASSWORD }}
         run: s remove --assume-yes
 
       # 5. 重新创建函数（环境变量从 GitHub Secrets 注入，s.yaml 中 ${env(...)} 自动替换）
@@ -86,4 +90,6 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DIDA_PHONE: ${{ secrets.DIDA_PHONE }}
           DIDA_PASSWORD: ${{ secrets.DIDA_PASSWORD }}
+          FEISHU_ENCRYPT_KEY: ${{ secrets.FEISHU_ENCRYPT_KEY }}
+          MANAGE_PASSWORD: ${{ secrets.MANAGE_PASSWORD }}
         run: s deploy --assume-yes

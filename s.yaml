@@ -5,6 +5,18 @@ edition: 3.0.0
 name: gzhlaker-fc
 access: default
 resources:
+  # ---- 自定义域名 ----
+  api-domain:
+    component: fc3-domain
+    props:
+      region: cn-hongkong
+      domainName: api.gzhlaker.cc
+      protocol: HTTP
+      routeConfig:
+        - path: /*
+          functionName: gzhlaker-processor
+          qualifier: LATEST
+
   paper-processor:
     component: fc3
     props:
@@ -46,10 +58,7 @@ resources:
         OPENROUTER_API_KEY: ${env(OPENROUTER_API_KEY)}
         OPENROUTER_BASE_URL: https://openrouter.ai/api/v1
         OPENROUTER_MODEL: openrouter/free
-        # 飞书配置
-        FEISHU_APP_ID: ${env(FEISHU_APP_ID)}
-        FEISHU_APP_SECRET: ${env(FEISHU_APP_SECRET)}
-        FEISHU_RECEIVE_ID: ${env(FEISHU_RECEIVE_ID)}
+        MANAGE_PASSWORD: ${env(MANAGE_PASSWORD)}
         # Telegram 配置
         TELEGRAM_BOT_TOKEN: ${env(TELEGRAM_BOT_TOKEN)}
         TELEGRAM_CHAT_ID: ${env(TELEGRAM_CHAT_ID)}
@@ -59,6 +68,18 @@ resources:
         # 默认发送通道
         SEND_CHANNELS: telegram
       triggers:
+        # ---- Flask API (HTTP) ----
+        - triggerName: http-api
+          triggerType: http
+          qualifier: LATEST
+          description: 'Flask API: upload_paper / keywords_manager'
+          triggerConfig:
+            authType: anonymous
+            methods:
+              - GET
+              - POST
+              - PUT
+              - DELETE
         # ---- Step 1: 下载论文 + 抽取文本 (每天 3 次: 00:00 / 08:00 / 16:00) ----
         - triggerName: step1-download-extract
           triggerType: timer

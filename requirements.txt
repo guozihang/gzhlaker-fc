@@ -3,3 +3,4 @@ oss2
 pypdfium2
 requests
 openai
+flask
