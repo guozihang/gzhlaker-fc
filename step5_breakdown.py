@@ -189,14 +189,27 @@ def step5_breakdown():
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                response_format={"type": "json_object"},
+                # 不加 response_format，free 模型不支持，靠 prompt 约束 JSON 输出
             )
 
-            raw = response.choices[0].message.content
+            # 防御：choices 可能为 None（部分模型/网关不支持时）
+            choices = getattr(response, "choices", None)
+            if not choices:
+                print(f"  ⚠️ LLM 返回无 choices")
+                results.append({"title": task_title, "status": "skip", "reason": "choices 为空"})
+                continue
+
+            raw = choices[0].message.content
             if not raw:
-                print(f"  ⚠️ LLM 返回空")
+                print(f"  ⚠️ LLM 返回空内容")
                 results.append({"title": task_title, "status": "skip", "reason": "空返回"})
                 continue
+
+            # 去掉可能的 markdown 代码围栏
+            raw = raw.strip()
+            if raw.startswith("```"):
+                lines = raw.split("\n")
+                raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
 
             parsed = json.loads(raw)
             if not isinstance(parsed, dict):
@@ -218,6 +231,7 @@ def step5_breakdown():
             results.append({"title": task_title, "status": "error", "reason": "JSON 解析失败"})
             continue
         except Exception as e:
+            traceback.print_exc()
             print(f"  ❌ LLM 失败: {e}")
             results.append({"title": task_title, "status": "error", "reason": str(e)})
             continue

@@ -56,7 +56,7 @@ def exchange_code_for_token(code):
                 "code": code,
                 "grant_type": "authorization_code",
                 "scope": "tasks:read tasks:write",
-                "redirect_uri": "https://run.gzhlaker.cc/dida_oauth_callback",
+                "redirect_uri": "https://run.gzhlaker.cc/telegram_webhook",
             },
             auth=(DIDA_CONFIG["client_id"], DIDA_CONFIG["client_secret"]),
             timeout=15,
@@ -83,7 +83,7 @@ def get_auth_url():
         f"?scope=tasks%3Aread%20tasks%3Awrite"
         f"&client_id={cid}"
         "&state=dida_oauth"
-        "&redirect_uri=https%3A%2F%2Frun.gzhlaker.cc%2Fdida_oauth_callback"
+        "&redirect_uri=https%3A%2F%2Frun.gzhlaker.cc%2Ftelegram_webhook"
         "&response_type=code"
     )
 

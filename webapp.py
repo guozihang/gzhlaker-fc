@@ -402,25 +402,23 @@ def _handle_pdf(chat_id, document):
 
 
 # ============================================================
-# 路由: Telegram Webhook
+# 路由: Telegram Webhook + OAuth 回调（共享同一条 API 网关路由）
 # ============================================================
 
-@app.route("/dida_oauth_callback", methods=["GET"])
-def dida_oauth_callback():
-    """OAuth2 回调：Dida 授权后跳转至此，自动用 code 换取 token。"""
-    code = request.args.get("code", "")
-    if not code:
-        return "<h1>授权失败</h1><p>缺少 code 参数</p>", 400
-
-    ok, msg = exchange_code_for_token(code)
-    if ok:
-        return "<h1>✅ 授权成功</h1><p>Token 已缓存，可以关闭此页面。</p>"
-    return f"<h1>❌ 授权失败</h1><p>{msg}</p>", 500
-
-
-@app.route("/telegram_webhook", methods=["POST"])
+@app.route("/telegram_webhook", methods=["GET", "POST"])
 def telegram_webhook():
-    """Telegram Bot webhook 入口。"""
+    """Telegram Bot webhook + Dida OAuth2 回调入口。"""
+    # OAuth2 回调（GET）：Dida 授权后跳转，自动用 code 换取 token
+    if request.method == "GET":
+        code = request.args.get("code", "")
+        if not code:
+            return "<h1>授权失败</h1><p>缺少 code 参数</p>", 400
+        ok, msg = exchange_code_for_token(code)
+        if ok:
+            return "<h1>✅ 授权成功</h1><p>Token 已缓存，可以关闭此页面。</p>"
+        return f"<h1>❌ 授权失败</h1><p>{msg}</p>", 500
+
+    # Telegram webhook（POST）
     try:
         update = request.get_json(force=True)
         print(f"📨 Telegram: {json.dumps(update, ensure_ascii=False)[:300]}")
