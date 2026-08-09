@@ -213,6 +213,7 @@ def _handle_text(chat_id, text, msg_id=None):
             "/delete <关键词> — 删除关键词\n"
             "/num — 查看队列篇数\n"
             "/clear — 清理交互消息\n"
+            "/breakdown — 手动触发目标拆解\n"
             "\n直接发送 PDF 文件即可上传并加入待读队列。"
         )
 
@@ -289,6 +290,15 @@ def _handle_text(chat_id, text, msg_id=None):
             conf_msg_id = r["result"]["message_id"]
             time.sleep(3)
             _delete_single_message(chat_id, conf_msg_id)
+
+    elif cmd == "/breakdown":
+        _send_telegram_message(chat_id, "🔄 正在拆解目标...")
+        try:
+            from step5_breakdown import step5_breakdown
+            step5_breakdown()
+        except Exception as e:
+            _send_telegram_message(chat_id, f"❌ 拆解失败: {e}")
+            traceback.print_exc()
 
     else:
         _send_telegram_message(chat_id,
@@ -400,7 +410,7 @@ def telegram_webhook():
         text = message.get("text", "")
         if text:
             _handle_text(chat_id, text, msg_id)
-            if msg_id and text.strip().lower() != "/clear":
+            if msg_id and text.strip().lower() not in ("/clear", "/breakdown"):
                 _queue_delete(chat_id, msg_id)
             return jsonify({"ok": True})
 

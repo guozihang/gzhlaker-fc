@@ -259,6 +259,42 @@ class DidaList:
             return [c for c in columns if c.get("projectId") == projectId]
         return columns
 
+    def completeTask(self, taskId, projectId):
+        """标记任务为完成。
+
+        从 getAllInfo 获取任务完整数据，更新 status=2 后通过 batch update 提交。
+        """
+        # 1. 获取任务完整数据
+        res = requests.get(url=self.__API.getAllInfo, headers=self.headers, timeout=15)
+        all_tasks = res.json().get("syncTaskBean", {}).get("update", [])
+        task = next((t for t in all_tasks if t.get("id") == taskId), None)
+        if not task:
+            return (False, f"Task {taskId} not found")
+
+        # 2. 修改状态为已完成
+        task["status"] = 2
+        task["completedTime"] = self.__getUTCTime()
+        task["modifiedTime"] = self.__getUTCTime()
+
+        # 3. 通过 batch update 提交
+        payload = dict(_DIDA_UPDATE_TASK_TEMPLATE)
+        payload["update"] = [task]
+        payload["add"] = []
+        payload["delete"] = []
+        payload["addAttachments"] = []
+        payload["updateAttachments"] = []
+        payload["deleteAttachments"] = []
+
+        res = requests.post(
+            url=self.__API.createTask,
+            headers=self.headers,
+            json=payload,
+            timeout=15,
+        )
+        if res.status_code == 200:
+            return (True, f"Task {taskId} completed")
+        return (False, f"Complete task failed: {res.content}")
+
     def getHabits(self):
         """获取所有习惯。"""
         res = requests.get(url=self.__API.getHabits, headers=self.headers, timeout=15)

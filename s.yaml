@@ -52,6 +52,7 @@ resources:
         # 滴答清单配置
         DIDA_PHONE: ${env(DIDA_PHONE)}
         DIDA_PASSWORD: ${env(DIDA_PASSWORD)}
+        DIDA_BREAKDOWN_TAG: ${env(DIDA_BREAKDOWN_TAG)}
         # 默认发送通道
         SEND_CHANNELS: telegram
       triggers:
@@ -85,6 +86,15 @@ resources:
             cronExpression: CRON_TZ=Asia/Shanghai 0 0 2,10,18 * * *
             enable: true
             payload: '{"step":"summarize"}'
+        # ---- Step 5: 目标拆解 (每天 07:00) ----
+        - triggerName: step5-breakdown
+          triggerType: timer
+          qualifier: LATEST
+          description: ''
+          triggerConfig:
+            cronExpression: CRON_TZ=Asia/Shanghai 0 0 7 * * *
+            enable: true
+            payload: '{"step":"breakdown"}'
         # ---- Step 4: 每周总结 (每周一 08:00) ----
         - triggerName: step4-weekly-summary
           triggerType: timer
