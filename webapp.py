@@ -287,7 +287,8 @@ def _handle_text(chat_id, text, msg_id=None):
         ).json()
         if r.get("ok"):
             conf_msg_id = r["result"]["message_id"]
-            threading.Timer(3.0, lambda: _delete_single_message(chat_id, conf_msg_id)).start()
+            time.sleep(3)
+            _delete_single_message(chat_id, conf_msg_id)
 
     else:
         _send_telegram_message(chat_id,
