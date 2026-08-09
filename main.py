@@ -5,7 +5,7 @@
   00:00/08:00/16:00 → {"step": "download_extract"}   下载论文 + 抽取文本
   02:00/10:00/18:00 → {"step": "summarize"}           大模型总结 + Telegram 推送
   周一 08:00        → {"step": "weekly_summary"}      每周总结
-  每天 07:00        → {"step": "breakdown"}           目标拆解
+  每天 23:40        → {"step": "breakdown"}           目标拆解
   (ccf_check 手动触发)
 
 本地测试:

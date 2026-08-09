@@ -91,7 +91,7 @@ resources:
           qualifier: LATEST
           description: ''
           triggerConfig:
-            cronExpression: CRON_TZ=Asia/Shanghai 0 0 7 * * *
+            cronExpression: CRON_TZ=Asia/Shanghai 0 40 23 * * *
             enable: true
             payload: '{"step":"breakdown"}'
         # ---- Step 4: 每周总结 (每周一 08:00) ----
