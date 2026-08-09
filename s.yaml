@@ -94,12 +94,3 @@ resources:
             cronExpression: CRON_TZ=Asia/Shanghai 0 0 8 * * 1
             enable: true
             payload: '{"step":"weekly_summary"}'
-        # ---- Telegram 消息自动清理 (每周一 09:00) ----
-        - triggerName: cleanup-tg-messages
-          triggerType: timer
-          qualifier: LATEST
-          description: '每周清理到期的 Bot 回复消息'
-          triggerConfig:
-            cronExpression: CRON_TZ=Asia/Shanghai 7 0 9 * * 1
-            enable: true
-            payload: '{"step":"cleanup_tg"}'

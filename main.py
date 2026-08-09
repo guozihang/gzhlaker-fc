@@ -23,7 +23,6 @@ from step1_download import step1_download_and_extract
 from step2_summarize import step2_summarize
 from step4_weekly import step4_weekly_summary
 from ccf_check import step_ccf_check
-from channels import _cleanup_expired_messages
 
 
 # 步骤路由表: step → func
@@ -32,7 +31,6 @@ _STEP_MAP = {
     "summarize":        step2_summarize,
     "weekly_summary":   step4_weekly_summary,
     "ccf_check":        step_ccf_check,
-    "cleanup_tg":       _cleanup_expired_messages,
 }
 
 
