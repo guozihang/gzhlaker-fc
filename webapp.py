@@ -199,6 +199,7 @@ def _handle_text(chat_id, text):
             "/add <关键词> — 添加关键词\n"
             "/delete <关键词> — 删除关键词\n"
             "/num — 查看队列篇数\n"
+            "/clear — 清理交互消息\n"
             "\n直接发送 PDF 文件即可上传并加入待读队列。"
         )
 
@@ -238,6 +239,27 @@ def _handle_text(chat_id, text):
     elif cmd == "/num":
         unread_queue = _oss_load_json("unread_queue.json", [])
         _send_telegram_message(chat_id, f"📬 待总结队列: {len(unread_queue)} 篇")
+
+    elif cmd == "/clear":
+        # 立即删除所有待清理的交互消息（命令 + 回复），不影响论文推送
+        pending = _oss_load_json("tg_pending_delete.json", [])
+        if not pending:
+            _send_telegram_message(chat_id, "没有需要清理的消息。")
+            return
+        deleted = 0
+        for item in pending:
+            try:
+                r = requests.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage",
+                    json={"chat_id": item["chat_id"], "message_id": item["message_id"]},
+                    timeout=5,
+                ).json()
+                if r.get("ok"):
+                    deleted += 1
+            except Exception:
+                pass
+        _oss_save_json("tg_pending_delete.json", [])
+        _send_telegram_message(chat_id, f"🧹 已清理 {deleted} 条消息。")
 
     else:
         _send_telegram_message(chat_id,
