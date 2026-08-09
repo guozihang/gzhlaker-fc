@@ -45,5 +45,4 @@ TELEGRAM_CONFIG = {
 DIDA_CONFIG = {
     "client_id": _require_env("DIDA_CLIENT_ID"),
     "client_secret": _require_env("DIDA_CLIENT_SECRET"),
-    "breakdown_tag": "拆解",
 }

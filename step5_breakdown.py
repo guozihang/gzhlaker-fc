@@ -15,7 +15,7 @@ import traceback
 
 from openai import OpenAI
 
-from config import LLM_CONFIG, DIDA_CONFIG
+from config import LLM_CONFIG
 from dida_client import DidaList
 from channels import _send_telegram_raw
 from oss_utils import _oss_load_json, _oss_save_json
@@ -25,6 +25,10 @@ _TAG_LIBRARY_KEY = "dida_tag_library.json"
 _FUNCTION_TAGS = {"快速入手", "关键路径", "深度工作", "检查点", "缓冲", "奖励"}
 _DOMAIN_TAGS = {"工作", "科研", "学习", "生活", "健康", "财务", "社交"}
 _CLOSED_TAGS = _FUNCTION_TAGS | _DOMAIN_TAGS
+
+# 标签定义
+_BREAKDOWN_TAG = "拆解"     # 需要拆解为子任务
+_FORMAT_TAG = "不拆"         # 不需要拆解，只需补时间段格式
 
 # 时间段提取正则: (HH:MM - HH:MM)
 _TIME_RE = re.compile(r"\((\d{2}:\d{2})\s*[-–—]\s*(\d{2}:\d{2})\)")
@@ -111,20 +115,29 @@ def step5_breakdown():
     print("🎯 Step 5: 目标拆解（滴答清单）")
     print("=" * 50)
 
-    tag = DIDA_CONFIG["breakdown_tag"]
-    print(f"🏷️  扫描标签: \"{tag}\"")
-
     dida = DidaList()
     if not dida.is_ready():
         print("❌ Dida token 未配置，跳过")
         return
 
-    tasks = dida.getFilterTask(tags=[tag])
-    if not tasks:
-        print(f"✅ 没有带 \"{tag}\" 标签的未完成任务")
+    # 分别获取两类任务
+    breakdown_tasks = dida.getFilterTask(tags=[_BREAKDOWN_TAG])
+    format_tasks = dida.getFilterTask(tags=[_FORMAT_TAG])
+
+    print(f"📋 「{_BREAKDOWN_TAG}」拆解任务: {len(breakdown_tasks)} 个")
+    print(f"📋 「{_FORMAT_TAG}」格式补全: {len(format_tasks)} 个")
+
+    if not breakdown_tasks and not format_tasks:
+        print(f"✅ 没有需要处理的任务")
         return
 
-    print(f"📋 待拆解任务: {len(tasks)} 个")
+    all_tasks = (
+        [("breakdown", t) for t in breakdown_tasks] +
+        [("format", t) for t in format_tasks]
+    )
+
+    if not all_tasks:
+        return
 
     existing_tags = _load_tag_library()
     if existing_tags:
@@ -275,17 +288,20 @@ def step5_breakdown():
     results = []
     all_project_tags = set(existing_tags)
 
-    for task in tasks:
+    for mode, task in all_tasks:
         task_id = task.get("id", "")
         task_title = task.get("title", "无标题")
         task_content = task.get("content", "")
         project_id = task.get("projectId", "")
         task_due = task.get("dueDate", "")
 
-        print(f"\n{'─' * 40}")
-        print(f"🔍 {task_title}")
+        is_format_only = (mode == "format")
 
-        # 获取同一项目已有任务的时间段，用于冲突检测
+        print(f"\n{'─' * 40}")
+        label = "🔧 格式补全" if is_format_only else "🔍 拆解"
+        print(f"{label}: {task_title}")
+
+        # 冲突检测
         schedule_info = _get_existing_schedule(dida, project_id, {task_due[:10]} if task_due else None)
         conflict_hint = ""
         if schedule_info:
@@ -295,7 +311,15 @@ def step5_breakdown():
         if existing_tags:
             tag_hint = f"\n已有项目标签（优先复用）: {', '.join(existing_tags)}"
 
-        user_prompt = f"""任务名称：{task_title}
+        # 格式补全模式用简化 prompt
+        if is_format_only:
+            mode_instruction = "这是一个已经够细粒度的任务，不需要拆解。只需补全 refinedGoal、时间段标题、番茄钟数量和标签，放入 reformat 字段输出。"
+        else:
+            mode_instruction = "请按要求拆解这个目标。"
+
+        user_prompt = f"""{mode_instruction}
+
+任务名称：{task_title}
 任务描述：{task_content or "（无）"}
 截止日期：{task_due or "无"}
 今天日期：{today.strftime('%Y-%m-%d')}{tag_hint}{conflict_hint}"""
@@ -343,23 +367,56 @@ def step5_breakdown():
                 for a in assumptions:
                     print(f"  💭 假设: {a}")
 
-            # ---- 格式补全路径：任务已够细粒度，只需补时间段 ----
-            if not subtasks and reformat and isinstance(reformat, dict):
+            # ---- 格式补全路径 ----
+            if reformat and isinstance(reformat, dict):
                 new_title = reformat.get("title", "")
                 if new_title:
-                    print(f"  🔧 格式补全: {new_title}")
+                    print(f"  🔧 格式补全 → {new_title}")
+                    # 格式补全：更新原标题
                     if _update_task_title(dida, task_id, project_id, new_title):
-                        print(f"  🏁 原任务标题已更新")
+                        print(f"  🏁 任务标题已更新")
                         results.append({"title": task_title, "status": "done", "created": 0, "total": 0})
                     else:
                         results.append({"title": task_title, "status": "error", "reason": "标题更新失败"})
                     continue
+                elif is_format_only:
+                    # reformat 存在但 title 为空
+                    print(f"  ⚠️ reformat 缺少 title")
+                    results.append({"title": task_title, "status": "error", "reason": "reformat 缺少 title"})
+                    continue
 
-            # ---- 无需拆解路径 ----
-            if not subtasks:
-                print(f"  ➖ 无需拆解，直接标记完成")
+            # ---- 格式补全模式但没有 reformat，尝试用 subtasks 第一个的时间段 ----
+            if is_format_only and not reformat:
+                if subtasks:
+                    # LLM 误拆了，取第一个子任务当格式模板
+                    first = subtasks[0]
+                    new_title = first.get("title", "")
+                    if new_title:
+                        print(f"  🔧 取首个任务格式: {new_title}")
+                        if _update_task_title(dida, task_id, project_id, new_title):
+                            print(f"  🏁 任务标题已更新")
+                            results.append({"title": task_title, "status": "done", "created": 0, "total": 0})
+                        else:
+                            results.append({"title": task_title, "status": "error", "reason": "标题更新失败"})
+                        continue
+                print(f"  ➖ 格式补全失败，标记完成")
                 dida.completeTask(task_id, project_id)
                 results.append({"title": task_title, "status": "noop"})
+                continue
+
+            # ---- 拆解模式：无需拆解 → reformat 或标记完成 ----
+            if not subtasks:
+                if reformat and isinstance(reformat, dict) and reformat.get("title"):
+                    new_title = reformat["title"]
+                    print(f"  🔧 无需拆解，格式补全: {new_title}")
+                    if _update_task_title(dida, task_id, project_id, new_title):
+                        results.append({"title": task_title, "status": "done", "created": 0, "total": 0})
+                    else:
+                        results.append({"title": task_title, "status": "error", "reason": "标题更新失败"})
+                else:
+                    print(f"  ➖ 无需拆解，直接标记完成")
+                    dida.completeTask(task_id, project_id)
+                    results.append({"title": task_title, "status": "noop"})
                 continue
 
             print(f"  📝 拆出 {len(subtasks)} 个子任务")
@@ -379,7 +436,7 @@ def step5_breakdown():
         for t in new_tags:
             all_project_tags.add(t)
 
-        # 创建子任务
+        # 创建子任务（仅拆解模式）
         created = 0
         for st in subtasks:
             title = st.get("title", "")
@@ -440,8 +497,8 @@ def step5_breakdown():
     lines = [
         f"🎯 目标拆解完成",
         f"",
-        f"扫描: {len(tasks)} 个（标签「{tag}」）",
-        f"拆解: {done} 个 → 共 {total_created} 个子任务",
+        f"「{_BREAKDOWN_TAG}」拆解: {len(breakdown_tasks)} 个 | 「{_FORMAT_TAG}」格式: {len(format_tasks)} 个",
+        f"处理: {done} 个 → 共 {total_created} 个子任务",
     ]
     if saved_tags:
         lines.append(f"项目标签库: {len(saved_tags)} 个")
