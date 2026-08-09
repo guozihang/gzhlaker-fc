@@ -25,7 +25,7 @@ resources:
       resourceGroupId: rg-acfmxv2fvdwwgrq
       role: ''
       layers:
-        - acs:fc:cn-hongkong:official:layers/Python310-OSS2/versions/1
+        - acs:fc:cn-hongkong:official:layers/Python312-OSS2/versions/1
         - >-
           acs:fc:cn-hongkong:1324091693163334:layers/gzhlaker-reading-layer/versions/12
       logConfig:
