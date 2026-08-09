@@ -5,18 +5,6 @@ edition: 3.0.0
 name: gzhlaker-fc
 access: default
 resources:
-  # ---- 自定义域名 ----
-  api-domain:
-    component: fc3-domain
-    props:
-      region: cn-hongkong
-      domainName: api.gzhlaker.cc
-      protocol: HTTP
-      routeConfig:
-        - path: /*
-          functionName: gzhlaker-processor
-          qualifier: LATEST
-
   paper-processor:
     component: fc3
     props:
