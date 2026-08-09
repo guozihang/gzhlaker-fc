@@ -188,7 +188,20 @@ def handle_http_event(event):
 # Bot 命令处理
 # ============================================================
 
-def _handle_text(chat_id, text):
+def _delete_single_message(chat_id, message_id):
+    """直接删除一条 Telegram 消息（不走队列）。"""
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage",
+            json={"chat_id": chat_id, "message_id": message_id},
+            timeout=5,
+        ).json()
+        return r.get("ok")
+    except Exception:
+        return False
+
+
+def _handle_text(chat_id, text, msg_id=None):
     """处理 Telegram Bot 文本命令。"""
     cmd = text.strip().lower()
 
@@ -243,9 +256,6 @@ def _handle_text(chat_id, text):
     elif cmd == "/clear":
         # 立即删除所有待清理的交互消息（命令 + 回复），不影响论文推送
         pending = _oss_load_json("tg_pending_delete.json", [])
-        if not pending:
-            _send_telegram_message(chat_id, "没有需要清理的消息。")
-            return
         deleted = 0
         for item in pending:
             try:
@@ -259,7 +269,25 @@ def _handle_text(chat_id, text):
             except Exception:
                 pass
         _oss_save_json("tg_pending_delete.json", [])
-        _send_telegram_message(chat_id, f"🧹 已清理 {deleted} 条消息。")
+
+        # 同时删除 /clear 命令消息本身
+        if msg_id:
+            if _delete_single_message(chat_id, msg_id):
+                deleted += 1
+
+        if deleted == 0:
+            _send_telegram_message(chat_id, "没有需要清理的消息。")
+            return
+
+        # 发送确认消息，3 秒后自动删除
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": chat_id, "text": f"🧹 已清理 {deleted} 条消息。"},
+            timeout=10,
+        ).json()
+        if r.get("ok"):
+            conf_msg_id = r["result"]["message_id"]
+            threading.Timer(3.0, lambda: _delete_single_message(chat_id, conf_msg_id)).start()
 
     else:
         _send_telegram_message(chat_id,
@@ -370,8 +398,8 @@ def telegram_webhook():
         # 文本命令
         text = message.get("text", "")
         if text:
-            _handle_text(chat_id, text)
-            if msg_id:
+            _handle_text(chat_id, text, msg_id)
+            if msg_id and text.strip().lower() != "/clear":
                 _queue_delete(chat_id, msg_id)
             return jsonify({"ok": True})
 
