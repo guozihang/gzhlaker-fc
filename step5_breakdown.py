@@ -2,12 +2,15 @@
 Step 5: 目标拆解 - 扫描带指定标签的滴答清单任务，LLM 拆解为子任务。
 定时触发: 每天 07:00
 
-扫描带标签的未完成任务 → LLM 拆解 → 创建子任务（含四象限）→ 标记原任务完成。
-标签库自动维护: 项目标签存入 OSS，LLM 优先复用。
+扫描带标签的未完成任务 → LLM 拆解 → 创建子任务（含番茄钟时间段）→ 标记原任务完成。
+- 时间段写入标题 (HH:MM - HH:MM)，以明天为起始日
+- 自动检测已有任务时间段避免冲突
+- 已够细粒度的任务自动补时间段格式
 """
 
 import datetime
 import json
+import re
 import traceback
 
 from openai import OpenAI
@@ -19,24 +22,20 @@ from oss_utils import _oss_load_json, _oss_save_json
 
 _TAG_LIBRARY_KEY = "dida_tag_library.json"
 
-# 功能标签（封闭集合）
 _FUNCTION_TAGS = {"快速入手", "关键路径", "深度工作", "检查点", "缓冲", "奖励"}
-
-# 领域标签（封闭七类）
 _DOMAIN_TAGS = {"工作", "科研", "学习", "生活", "健康", "财务", "社交"}
-
-# 所有封闭标签（不是项目标签的）
 _CLOSED_TAGS = _FUNCTION_TAGS | _DOMAIN_TAGS
+
+# 时间段提取正则: (HH:MM - HH:MM)
+_TIME_RE = re.compile(r"\((\d{2}:\d{2})\s*[-–—]\s*(\d{2}:\d{2})\)")
 
 
 def _load_tag_library():
-    """从 OSS 加载已有项目标签列表。"""
     data = _oss_load_json(_TAG_LIBRARY_KEY, {})
     return data.get("project_tags", [])
 
 
 def _save_tag_library(project_tags):
-    """将项目标签列表写入 OSS。"""
     tags = sorted(set(t for t in project_tags if t and isinstance(t, str)))
     _oss_save_json(_TAG_LIBRARY_KEY, {
         "project_tags": tags,
@@ -46,7 +45,6 @@ def _save_tag_library(project_tags):
 
 
 def _collect_project_tags(subtasks):
-    """从子任务中提取项目标签（排除功能标签和领域标签后剩下的）。"""
     collected = set()
     for st in subtasks:
         tags = st.get("tags", [])
@@ -55,6 +53,56 @@ def _collect_project_tags(subtasks):
                 if t and t not in _CLOSED_TAGS:
                     collected.add(t)
     return list(collected)
+
+
+def _get_existing_schedule(dida, project_id, due_dates):
+    """获取指定项目下、指定日期范围内已有任务的时间段，用于冲突检测。
+
+    Returns:
+        list of "任务名(HH:MM - HH:MM) 📅YYYY-MM-DD" 字符串
+    """
+    if not project_id:
+        return []
+    try:
+        # 查询未来 14 天内的未完成任务
+        tasks = dida.getFilterTask(projectId=project_id) if hasattr(dida, 'getFilterTask') else []
+        schedule = []
+        for t in tasks:
+            title = t.get("title", "")
+            due = t.get("dueDate", "")
+            if due:
+                try:
+                    due_date = due[:10]  # "2026-08-10"
+                except Exception:
+                    due_date = due
+                # 只关注在目标日期范围内的任务
+                if due_dates and due_date not in due_dates:
+                    continue
+                schedule.append(f"{title} 📅{due_date}")
+            elif _TIME_RE.search(title):
+                # 有时间段但无截止日期，也纳入
+                schedule.append(title)
+        return schedule
+    except Exception:
+        return []
+
+
+def _update_task_title(dida, task_id, project_id, new_title):
+    """更新任务标题（用于格式补全）。通过创建+删除原任务实现。"""
+    # Open API 的 update task 需要完整 payload；改用重建方式
+    # 先获取原任务信息，再创建新任务、删除旧任务
+    # 简化：直接创建同名新任务并完成旧任务
+    try:
+        ok, _ = dida.createTask(
+            title=new_title,
+            projectId=project_id,
+        )
+        if ok:
+            dida.completeTask(task_id, project_id)
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def step5_breakdown():
@@ -97,7 +145,7 @@ def step5_breakdown():
 # 用户画像(拆解时必须照顾)
 1. 有拖延倾向,面对大任务会回避
    → 每天最多安排 2 个子任务,不要把日程排满
-   → 第一个子任务必须零门槛、≤30 分钟、无需任何前置准备
+   → 第一个子任务必须零门槛、1 个番茄钟以内、无需任何前置准备
 2. 容易焦虑,任务不明确会不安
    → 所有描述具体到动作级别,以动词开头,禁止"研究一下""了解一下""看看"等模糊表述
    → 每个子任务必须有可验证的完成标志(如"输出 500 字草稿"而非"写草稿")
@@ -112,21 +160,33 @@ def step5_breakdown():
 3. 只填充用户没说的信息,不擅自扩大或改变用户原本意图
 4. 若存在多种合理解读,选对用户画像最友好(启动门槛最低)的一种,其余方向写进 assumptions 供用户核对
 5. 将拆解依赖的关键假设写入 assumptions(0-3 条,每条一句话),假设被推翻则拆解需要重做
-6. 若输入模糊到连方向都无法确定(如只有一个词),仍给出最合理版本,且第一个子任务固定为「澄清目标」型快速入手任务:引导用户用 ≤15 分钟写下期望成果与范围,确保后续任务不跑偏
+6. 若输入模糊到连方向都无法确定(如只有一个词),仍给出最合理版本,且第一个子任务固定为「澄清目标」型快速入手任务:引导用户用 1 个番茄钟写下期望成果与范围,确保后续任务不跑偏
 
 # 拆解规则
-1. 拆成 3-8 个子任务,按执行顺序排列;单个任务粒度控制在 30-120 分钟,一次坐下即可完成
-2. 第一个子任务为「快速入手」型:打开就能做,30 分钟内获得可见成果,用于打破启动阻力
+1. 拆成 3-8 个子任务,按执行顺序排列;单个任务为 1-4 个番茄钟,一次坐下即可完成
+2. 第一个子任务为「快速入手」型:打开就能做,1 个番茄钟内获得可见成果,用于打破启动阻力
 3. 主动补充用户容易遗漏的环节:前置准备(权限、资料、环境)与收尾动作(检查、提交、备份),总任务数仍不超过 8 个
 4. 每完成 2-3 个推进型任务后,安排一个「检查点」或「缓冲」,吸收延误、巩固成就感
 5. 关键里程碑之后安排一个具体的「奖励」任务(奖励内容要具体,如"看一场电影",而不是"奖励自己")
-6. 若目标本身已足够细、无需拆解,返回空 subtasks(见输出格式)
+6. 若目标本身已足够细、无需拆解,返回空 subtasks,同时在 reformat 字段中给出统一格式后的任务标题(含时间段)
+
+# 番茄钟与时间排布规则
+1. 所有推进型、检查点任务以「番茄钟」为最小粒度:1 个番茄钟 = 25 分钟专注 + 5 分钟休息
+2. 每个子任务必须恰好占用整数个番茄钟(1-4 个),写入 pomodoros 字段;estimatedMinutes = pomodoros × 25(纯工作时长)
+3. 快速入手任务固定 1 个番茄钟;深度工作为 2-4 个番茄钟;超过 4 个番茄钟的任务必须继续拆分
+4. 缓冲、奖励任务豁免番茄钟约束:pomodoros 填 0,estimatedMinutes 按实际时长估计
+5. 标题末尾必须附执行时间段,格式 (HH:MM - HH:MM),24 小时制,半角括号,与任务名之间不加空格以外的字符
+   - 时间段跨度 = pomodoros × 25 分钟 + (pomodoros - 1) × 5 分钟番茄间短休
+   - 例:2 个番茄钟的任务 09:00 开始 → (09:00 - 09:55)
+   - 缓冲、奖励任务的时间段按实际时长给出
+6. 同一天内时间段不得重叠:默认第 1 个任务从 09:00 开始,第 2 个任务从 14:00 开始
+7. 深度工作优先安排在上午;22:00 之后不安排任务
 
 # 标签体系(三层结构,两层封闭 + 一层受控生成)
 ## 第 1 层:功能标签(封闭集合,描述任务在计划中的角色,不得自造)
 - 快速入手:零门槛启动任务(仅用于第 1 个任务或阶段启动点)
 - 关键路径:未完成会阻塞后续所有工作
-- 深度工作:需要 ≥60 分钟连续专注
+- 深度工作:需要 2 个及以上番茄钟的连续专注
 - 检查点:阶段性回顾小结,确认方向、积累正反馈
 - 缓冲:机动时间,吸收前面任务的延误
 - 奖励:完成关键节点后的具体自我奖励
@@ -176,28 +236,41 @@ def step5_breakdown():
 
 # 日期规则(suggestedDueDate 字段)
 - 以对话中的当前日期为"今天"推算,格式 YYYY-MM-DD
-- 用户给了截止日期:任务从今天起排布,最后一项至少比截止日早 1 天,预留收尾余量
-- 未给截止日期:从今天起按每天 1-2 个任务均匀铺开
+- 默认从「明天」开始排布,今天不排任务(今天留给临时事务与休息)
+- 用户给了截止日期:最后一项至少比截止日早 1 天;若明天至截止日之间的天数不足以按每天 ≤2 个排布,优先保留快速入手与关键路径任务,其余顺延或省略,并在 assumptions 中说明取舍
+- 未给截止日期:从明天起按每天 1-2 个任务均匀铺开
 - 同一天最多 2 个任务,且「深度工作」不超过 2 个
+
+# 冲突避免
+- 若输入中提供了「已有任务时间段」列表,必须避开已占用的时间段
+- 同一项目内同一天最多 2 个任务(含已有任务),新任务的时间段不得与已有任务重叠
+- 若某天已有 2 个任务,新任务顺延至下一个可用日期
 
 # 输出格式(严格遵守)
 - 只输出 JSON 本体:不加 markdown 代码围栏,不输出任何解释文字
-- 顶层结构固定为三个字段,顺序如下:
+- 顶层结构固定为四个字段,顺序如下:
   - refinedGoal:字符串,补全后的具体目标(≤40 字,含交付物与完成标准)
   - assumptions:字符串数组,拆解依赖的关键假设(0-3 条)
   - subtasks:子任务数组
+  - reformat:原任务格式补全,仅当 subtasks 为空且原任务已够细粒度时输出;否则为 null
 - 子任务字段定义:
-  - title:不超过 20 字,动词开头
+  - title:任务名称不超过 20 字、动词开头,末尾附时间段,格式"任务名(HH:MM - HH:MM)"
   - quadrant:整数,1/2/3/4 之一,与 priority 满足固定映射
   - priority:0 / 1 / 3 / 5 之一
   - content:下一步具体动作 + 可验证的完成标志,一句话
   - tags:功能标签 1-2 个 + 领域标签恰好 1 个 + 项目标签 0-1 个,按「功能→领域→项目」顺序
   - suggestedDueDate:YYYY-MM-DD
-  - estimatedMinutes:整数,预估耗时(分钟)
-- 无需拆解时输出:{"refinedGoal": "原任务本身", "assumptions": [], "subtasks": []}
+  - pomodoros:整数,番茄钟数量;推进型/检查点任务 1-4,缓冲/奖励填 0
+  - estimatedMinutes:整数;推进型/检查点 = pomodoros × 25,缓冲/奖励按实际估计
+- reformat 字段定义(仅 subtasks 为空时输出):
+  - title:带时间段的统一格式标题
+  - pomodoros:番茄钟数
+  - suggestedDueDate:建议日期
+  - priority:优先级
+- 无需拆解且无需格式补全时输出:{"refinedGoal": "原任务本身", "assumptions": [], "subtasks": [], "reformat": null}
 
 # 输出示例
-{"refinedGoal": "完成论文实验章节初稿,达到可请导师评审的完整度", "assumptions": ["实验数据已收集完毕", "沿用现有论文大纲不再大改"], "subtasks": [{"title": "列出实验章节小节框架", "quadrant": 1, "priority": 5, "content": "打开论文文档,花 20 分钟列出实验章节的小节标题并保存,写完即完成", "tags": ["快速入手", "关键路径", "科研", "学位论文"], "suggestedDueDate": "2026-08-10", "estimatedMinutes": 25}]}"""
+{"refinedGoal": "完成论文实验章节初稿,达到可请导师评审的完整度", "assumptions": ["实验数据已收集完毕", "沿用现有论文大纲不再大改"], "subtasks": [{"title": "列出实验章节小节框架(09:00 - 09:25)", "quadrant": 1, "priority": 5, "content": "打开论文文档,用 1 个番茄钟列出实验章节的小节标题并保存,写完即完成", "tags": ["快速入手", "关键路径", "科研", "学位论文"], "suggestedDueDate": "2026-08-10", "pomodoros": 1, "estimatedMinutes": 25}], "reformat": null}"""
 
     results = []
     all_project_tags = set(existing_tags)
@@ -212,6 +285,12 @@ def step5_breakdown():
         print(f"\n{'─' * 40}")
         print(f"🔍 {task_title}")
 
+        # 获取同一项目已有任务的时间段，用于冲突检测
+        schedule_info = _get_existing_schedule(dida, project_id, {task_due[:10]} if task_due else None)
+        conflict_hint = ""
+        if schedule_info:
+            conflict_hint = "\n已有任务时间段（必须避开，同一天不超过 2 个任务）:\n- " + "\n- ".join(schedule_info[:20])
+
         tag_hint = ""
         if existing_tags:
             tag_hint = f"\n已有项目标签（优先复用）: {', '.join(existing_tags)}"
@@ -219,7 +298,7 @@ def step5_breakdown():
         user_prompt = f"""任务名称：{task_title}
 任务描述：{task_content or "（无）"}
 截止日期：{task_due or "无"}
-今天日期：{today.strftime('%Y-%m-%d')}{tag_hint}"""
+今天日期：{today.strftime('%Y-%m-%d')}{tag_hint}{conflict_hint}"""
 
         try:
             response = llm_client.chat.completions.create(
@@ -256,6 +335,7 @@ def step5_breakdown():
             refined_goal = parsed.get("refinedGoal", "")
             assumptions = parsed.get("assumptions", [])
             subtasks = parsed.get("subtasks", [])
+            reformat = parsed.get("reformat")
 
             if refined_goal:
                 print(f"  🎯 {refined_goal}")
@@ -263,6 +343,19 @@ def step5_breakdown():
                 for a in assumptions:
                     print(f"  💭 假设: {a}")
 
+            # ---- 格式补全路径：任务已够细粒度，只需补时间段 ----
+            if not subtasks and reformat and isinstance(reformat, dict):
+                new_title = reformat.get("title", "")
+                if new_title:
+                    print(f"  🔧 格式补全: {new_title}")
+                    if _update_task_title(dida, task_id, project_id, new_title):
+                        print(f"  🏁 原任务标题已更新")
+                        results.append({"title": task_title, "status": "done", "created": 0, "total": 0})
+                    else:
+                        results.append({"title": task_title, "status": "error", "reason": "标题更新失败"})
+                    continue
+
+            # ---- 无需拆解路径 ----
             if not subtasks:
                 print(f"  ➖ 无需拆解，直接标记完成")
                 dida.completeTask(task_id, project_id)
@@ -305,8 +398,8 @@ def step5_breakdown():
             if not isinstance(tags, list):
                 tags = [str(tags)] if tags else []
 
-            # quadrant 用于日志展示
             quadrant = st.get("quadrant", 0)
+            pomodoros = st.get("pomodoros", 0)
 
             try:
                 ok, msg = dida.createTask(
@@ -319,10 +412,11 @@ def step5_breakdown():
                 )
                 if ok:
                     created += 1
+                    pomo_str = f" 🍅×{pomodoros}" if pomodoros else ""
                     quad_str = f" Q{quadrant}" if quadrant else ""
                     tag_str = f" [{', '.join(tags)}]" if tags else ""
                     date_str = f" 📅{date_str}" if date_str else ""
-                    print(f"  ✅{quad_str}{date_str}{tag_str} {title}")
+                    print(f"  ✅{quad_str}{pomo_str}{date_str}{tag_str} {title}")
                 else:
                     print(f"  ❌ {title} — {msg}")
             except Exception as e:
