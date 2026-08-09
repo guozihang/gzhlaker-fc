@@ -94,18 +94,25 @@ def _get_existing_schedule(dida, project_id, due_dates):
         return []
 
 
-def _update_task_title(dida, task_id, project_id, new_title, original_task=None):
-    """更新任务标题（用于格式补全）。创建新任务（保留原属性）+ 完成旧任务。
+def _update_task_title(dida, task_id, project_id, new_title, original_task=None, new_tags=None, new_due=None):
+    """更新任务标题（用于格式补全）。创建新任务 + 完成旧任务。
 
-    Args:
-        original_task: 原始任务 dict（从 getFilterTask 返回），用于保留 tags/priority/dueDate/content
+    - 自动去除「拆解」「不拆」标签
+    - new_tags 优先，否则保留原标签（去处理标签）
     """
-    tags = original_task.get("tags") if original_task else []
+    if new_tags and isinstance(new_tags, list):
+        tags = [t for t in new_tags if t not in (_BREAKDOWN_TAG, _FORMAT_TAG)]
+    elif original_task:
+        tags = [t for t in (original_task.get("tags") or [])
+                if t not in (_BREAKDOWN_TAG, _FORMAT_TAG)]
+    else:
+        tags = []
+
     priority = original_task.get("priority", 0) if original_task else 0
     content = original_task.get("content", "") if original_task else ""
+    due = new_due
     due_date_str = original_task.get("dueDate", "") if original_task else ""
-    due = None
-    if due_date_str:
+    if not due and due_date_str:
         try:
             due = datetime.datetime.strptime(due_date_str[:10], "%Y-%m-%d")
         except (ValueError, TypeError):
@@ -117,8 +124,8 @@ def _update_task_title(dida, task_id, project_id, new_title, original_task=None)
             projectId=project_id,
             priority=priority,
             content=content,
-            tags=tags if isinstance(tags, list) else [],
-            dueDate=due,
+            tags=tags,
+            dueDate=due or new_due,
         )
         if ok:
             dida.completeTask(task_id, project_id)
@@ -299,6 +306,7 @@ def step5_breakdown():
   - pomodoros:番茄钟数
   - suggestedDueDate:建议日期
   - priority:优先级
+  - tags:完整标签列表(功能1-2+领域1+项目0-1)，不含「拆解」「不拆」标签
 - 无需拆解且无需格式补全时输出:{"refinedGoal": "原任务本身", "assumptions": [], "subtasks": [], "reformat": null}
 
 # 输出示例
@@ -410,35 +418,41 @@ def step5_breakdown():
             # ---- 格式补全路径 ----
             if reformat and isinstance(reformat, dict):
                 new_title = reformat.get("title", "")
+                new_tags = reformat.get("tags", [])
+                new_due_str = reformat.get("suggestedDueDate", "")
+                new_due = None
+                if new_due_str:
+                    try:
+                        new_due = datetime.datetime.strptime(str(new_due_str)[:10], "%Y-%m-%d")
+                    except (ValueError, TypeError):
+                        pass
                 if new_title:
                     print(f"  🔧 格式补全 → {new_title}")
-                    # 格式补全：更新原标题
-                    if _update_task_title(dida, task_id, project_id, new_title, task):
-                        print(f"  🏁 任务标题已更新")
+                    if _update_task_title(dida, task_id, project_id, new_title, task, new_tags, new_due):
+                        print(f"  🏁 任务已更新（含标签，已去「不拆」）")
                         results.append({"title": task_title, "status": "done", "created": 0, "total": 0})
                     else:
                         results.append({"title": task_title, "status": "error", "reason": "标题更新失败"})
                     continue
                 elif is_format_only:
-                    # reformat 存在但 title 为空
                     print(f"  ⚠️ reformat 缺少 title")
                     results.append({"title": task_title, "status": "error", "reason": "reformat 缺少 title"})
                     continue
 
-            # ---- 格式补全模式但没有 reformat，尝试用 subtasks 第一个的时间段 ----
+            # ---- 格式补全模式但没有 reformat，尝试用 subtasks 第一个 ----
             if is_format_only and not reformat:
                 if subtasks:
-                    # LLM 误拆了，取第一个子任务当格式模板
                     first = subtasks[0]
-                    new_title = first.get("title", "")
-                    if new_title:
-                        print(f"  🔧 取首个任务格式: {new_title}")
-                        if _update_task_title(dida, task_id, project_id, new_title, task):
-                            print(f"  🏁 任务标题已更新")
-                            results.append({"title": task_title, "status": "done", "created": 0, "total": 0})
-                        else:
-                            results.append({"title": task_title, "status": "error", "reason": "标题更新失败"})
-                        continue
+                    if isinstance(first, dict):
+                        new_title = first.get("title", "")
+                        new_tags = first.get("tags", [])
+                        if new_title:
+                            print(f"  🔧 取首个任务格式: {new_title}")
+                            if _update_task_title(dida, task_id, project_id, new_title, task, new_tags):
+                                results.append({"title": task_title, "status": "done", "created": 0, "total": 0})
+                            else:
+                                results.append({"title": task_title, "status": "error", "reason": "标题更新失败"})
+                            continue
                 print(f"  ➖ 格式补全失败，标记完成")
                 dida.completeTask(task_id, project_id)
                 results.append({"title": task_title, "status": "noop"})
@@ -448,8 +462,16 @@ def step5_breakdown():
             if not subtasks:
                 if reformat and isinstance(reformat, dict) and reformat.get("title"):
                     new_title = reformat["title"]
+                    new_tags = reformat.get("tags", [])
+                    new_due_str = reformat.get("suggestedDueDate", "")
+                    new_due = None
+                    if new_due_str:
+                        try:
+                            new_due = datetime.datetime.strptime(str(new_due_str)[:10], "%Y-%m-%d")
+                        except (ValueError, TypeError):
+                            pass
                     print(f"  🔧 无需拆解，格式补全: {new_title}")
-                    if _update_task_title(dida, task_id, project_id, new_title, task):
+                    if _update_task_title(dida, task_id, project_id, new_title, task, new_tags, new_due):
                         results.append({"title": task_title, "status": "done", "created": 0, "total": 0})
                     else:
                         results.append({"title": task_title, "status": "error", "reason": "标题更新失败"})
