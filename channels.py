@@ -63,8 +63,15 @@ def _fmt_telegram(title, info, html=True):
     return text[:4000] + ("\n\n... (截断)" if len(text) > 4000 else "")
 
 
-def _send_telegram_raw(text, parse_mode="Markdown"):
-    """发送任意文本到 Telegram，支持自动分段和 Markdown/纯文本回退。"""
+def _send_telegram_raw(text, parse_mode="Markdown", prefix="", queue_delete=False):
+    """发送任意文本到 Telegram，支持自动分段和 Markdown/纯文本回退。
+
+    Args:
+        text: 要发送的文本
+        parse_mode: Telegram parse_mode
+        prefix: 多段时的前缀（如 "📊 周报"）
+        queue_delete: True 时把消息 ID 加入待删除队列，可被 /clear 清理
+    """
     bot = TELEGRAM_CONFIG["bot_token"]
     cid = TELEGRAM_CONFIG["chat_id"]
     if not bot or not cid:
@@ -89,8 +96,12 @@ def _send_telegram_raw(text, parse_mode="Markdown"):
     total = len(parts)
     ok = 0
     for i, part in enumerate(parts):
-        prefix = f"📊 周报 ({i+1}/{total})\n\n" if total > 1 else "📊 周报\n\n"
-        body = prefix + part
+        if total > 1 and prefix:
+            body = f"{prefix} ({i+1}/{total})\n\n{part}"
+        elif prefix:
+            body = f"{prefix}\n\n{part}"
+        else:
+            body = part
 
         r = requests.post(
             f"https://api.telegram.org/bot{bot}/sendMessage",
@@ -101,6 +112,8 @@ def _send_telegram_raw(text, parse_mode="Markdown"):
 
         if r.get("ok"):
             ok += 1
+            if queue_delete:
+                _queue_delete(cid, r["result"]["message_id"])
         elif parse_mode and "parse" in str(r.get("description", "")).lower():
             r2 = requests.post(
                 f"https://api.telegram.org/bot{bot}/sendMessage",
@@ -109,6 +122,8 @@ def _send_telegram_raw(text, parse_mode="Markdown"):
             ).json()
             if r2.get("ok"):
                 ok += 1
+                if queue_delete:
+                    _queue_delete(cid, r2["result"]["message_id"])
             else:
                 print(f"  ❌ Telegram 第{i+1}段发送失败: {r2.get('description', '?')}")
         else:

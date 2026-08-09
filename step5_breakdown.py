@@ -517,7 +517,7 @@ def step5_breakdown():
     summary = "\n".join(lines)
     print(summary)
     try:
-        _send_telegram_raw(summary)
+        _send_telegram_raw(summary, queue_delete=True)
     except Exception as e:
         print(f"⚠️ Telegram 推送失败: {e}")
 

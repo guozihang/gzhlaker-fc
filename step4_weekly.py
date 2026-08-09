@@ -178,7 +178,7 @@ def step4_weekly_summary():
             _oss_save_json("weekly.json", weekly)
 
             # 5. 发送到 Telegram
-            _send_telegram_raw(result)
+            _send_telegram_raw(result, prefix="📊 周报")
         else:
             print("❌ LLM 返回空内容")
 
