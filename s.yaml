@@ -28,6 +28,7 @@ resources:
         - acs:fc:cn-hongkong:official:layers/Python310-OSS2/versions/1
         - >-
           acs:fc:cn-hongkong:1324091693163334:layers/gzhlaker-reading-layer/versions/11
+        - acs:fc:cn-hongkong:official:layers/Python3-Flask3x/versions/2
       logConfig:
         enableRequestMetrics: true
         enableInstanceMetrics: true
