@@ -273,16 +273,23 @@ def _handle_text(chat_id, text, msg_id=None):
                 pass
         _oss_save_json("tg_pending_delete.json", [])
 
+        # 同时删除 /clear 命令消息本身（当次即删，不等下次）
+        if msg_id:
+            if _delete_single_message(chat_id, msg_id):
+                deleted += 1
+
         if deleted == 0:
             _send_telegram_message(chat_id, "没有需要清理的消息。")
             return
 
-        # 发送确认消息（自动入队列，同时也 3 秒后自动删除作为即时反馈）
-        _send_telegram_message(chat_id, f"🧹 已清理 {deleted} 条消息。")
-        # 获取刚发送的消息 ID 做 3 秒延迟删除（即时反馈）
-        pending2 = _oss_load_json("tg_pending_delete.json", [])
-        if pending2:
-            conf_msg_id = pending2[-1]["message_id"]
+        # 发送确认消息，3 秒后自动删除
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": chat_id, "text": f"🧹 已清理 {deleted} 条消息。"},
+            timeout=10,
+        ).json()
+        if r.get("ok"):
+            conf_msg_id = r["result"]["message_id"]
             time.sleep(3)
             _delete_single_message(chat_id, conf_msg_id)
 
@@ -433,7 +440,7 @@ def telegram_webhook():
         text = message.get("text", "")
         if text:
             _handle_text(chat_id, text, msg_id)
-            if msg_id:
+            if msg_id and text.strip().lower() != "/clear":
                 _queue_delete(chat_id, msg_id)
             return jsonify({"ok": True})
 

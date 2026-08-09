@@ -94,15 +94,31 @@ def _get_existing_schedule(dida, project_id, due_dates):
         return []
 
 
-def _update_task_title(dida, task_id, project_id, new_title):
-    """更新任务标题（用于格式补全）。通过创建+删除原任务实现。"""
-    # Open API 的 update task 需要完整 payload；改用重建方式
-    # 先获取原任务信息，再创建新任务、删除旧任务
-    # 简化：直接创建同名新任务并完成旧任务
+def _update_task_title(dida, task_id, project_id, new_title, original_task=None):
+    """更新任务标题（用于格式补全）。创建新任务（保留原属性）+ 完成旧任务。
+
+    Args:
+        original_task: 原始任务 dict（从 getFilterTask 返回），用于保留 tags/priority/dueDate/content
+    """
+    tags = original_task.get("tags") if original_task else []
+    priority = original_task.get("priority", 0) if original_task else 0
+    content = original_task.get("content", "") if original_task else ""
+    due_date_str = original_task.get("dueDate", "") if original_task else ""
+    due = None
+    if due_date_str:
+        try:
+            due = datetime.datetime.strptime(due_date_str[:10], "%Y-%m-%d")
+        except (ValueError, TypeError):
+            pass
+
     try:
         ok, _ = dida.createTask(
             title=new_title,
             projectId=project_id,
+            priority=priority,
+            content=content,
+            tags=tags if isinstance(tags, list) else [],
+            dueDate=due,
         )
         if ok:
             dida.completeTask(task_id, project_id)
@@ -293,10 +309,10 @@ def step5_breakdown():
 
     for mode, task in all_tasks:
         task_id = task.get("id", "")
-        task_title = task.get("title", "无标题")
-        task_content = task.get("content", "")
-        project_id = task.get("projectId", "")
-        task_due = task.get("dueDate", "")
+        task_title = task.get("title") or "无标题"
+        task_content = task.get("content") or ""
+        project_id = task.get("projectId") or ""
+        task_due = task.get("dueDate") or ""
 
         is_format_only = (mode == "format")
 
@@ -397,7 +413,7 @@ def step5_breakdown():
                 if new_title:
                     print(f"  🔧 格式补全 → {new_title}")
                     # 格式补全：更新原标题
-                    if _update_task_title(dida, task_id, project_id, new_title):
+                    if _update_task_title(dida, task_id, project_id, new_title, task):
                         print(f"  🏁 任务标题已更新")
                         results.append({"title": task_title, "status": "done", "created": 0, "total": 0})
                     else:
@@ -417,7 +433,7 @@ def step5_breakdown():
                     new_title = first.get("title", "")
                     if new_title:
                         print(f"  🔧 取首个任务格式: {new_title}")
-                        if _update_task_title(dida, task_id, project_id, new_title):
+                        if _update_task_title(dida, task_id, project_id, new_title, task):
                             print(f"  🏁 任务标题已更新")
                             results.append({"title": task_title, "status": "done", "created": 0, "total": 0})
                         else:
@@ -433,7 +449,7 @@ def step5_breakdown():
                 if reformat and isinstance(reformat, dict) and reformat.get("title"):
                     new_title = reformat["title"]
                     print(f"  🔧 无需拆解，格式补全: {new_title}")
-                    if _update_task_title(dida, task_id, project_id, new_title):
+                    if _update_task_title(dida, task_id, project_id, new_title, task):
                         results.append({"title": task_title, "status": "done", "created": 0, "total": 0})
                     else:
                         results.append({"title": task_title, "status": "error", "reason": "标题更新失败"})
@@ -463,6 +479,9 @@ def step5_breakdown():
         # 创建子任务（仅拆解模式）
         created = 0
         for st in subtasks:
+            if not isinstance(st, dict):
+                print(f"  ⚠️ 跳过非 dict 子任务: {st}")
+                continue
             title = st.get("title", "")
             if not title:
                 continue
