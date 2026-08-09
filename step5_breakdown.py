@@ -60,7 +60,7 @@ def _collect_project_tags(subtasks):
 
 
 def _get_existing_schedule(dida, project_id, due_dates):
-    """获取指定项目下、指定日期范围内已有任务的时间段，用于冲突检测。
+    """获取指定项目下已排期的普通任务时间段（排除正在拆解/格式化的任务）。
 
     Returns:
         list of "任务名(HH:MM - HH:MM) 📅YYYY-MM-DD" 字符串
@@ -68,23 +68,25 @@ def _get_existing_schedule(dida, project_id, due_dates):
     if not project_id:
         return []
     try:
-        # 查询未来 14 天内的未完成任务
-        tasks = dida.getFilterTask(projectId=project_id) if hasattr(dida, 'getFilterTask') else []
+        all_tasks = dida.getFilterTask(projectId=project_id) if hasattr(dida, 'getFilterTask') else []
         schedule = []
-        for t in tasks:
+        for t in all_tasks:
+            # 排除带「拆解」或「不拆」标签的任务（正在被处理，会被完成或更新）
+            task_tags = t.get("tags") or []
+            if _BREAKDOWN_TAG in task_tags or _FORMAT_TAG in task_tags:
+                continue
+
             title = t.get("title", "")
             due = t.get("dueDate", "")
             if due:
                 try:
-                    due_date = due[:10]  # "2026-08-10"
+                    due_date = due[:10]
                 except Exception:
                     due_date = due
-                # 只关注在目标日期范围内的任务
                 if due_dates and due_date not in due_dates:
                     continue
                 schedule.append(f"{title} 📅{due_date}")
             elif _TIME_RE.search(title):
-                # 有时间段但无截止日期，也纳入
                 schedule.append(title)
         return schedule
     except Exception:
