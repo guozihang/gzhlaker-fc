@@ -304,7 +304,8 @@ def _handle_pdf(chat_id, document):
 
     # 5. 入队
     unread_queue = _oss_load_json("unread_queue.json", [])
-    if safe_title not in unread_queue:
+    queue_set = set(unread_queue)
+    if safe_title not in queue_set:
         unread_queue.append(safe_title)
         _oss_save_json("unread_queue.json", unread_queue)
 
