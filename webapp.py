@@ -7,6 +7,8 @@ import io
 import json
 import os
 import sys
+import threading
+import time
 import traceback
 
 import requests
@@ -22,12 +24,33 @@ from config import TELEGRAM_CONFIG
 
 
 # ============================================================
-# Flask 应用
+# Flask 应用 + idle 自动退出
 # ============================================================
 app = Flask(__name__)
 
 TELEGRAM_BOT_TOKEN = TELEGRAM_CONFIG["bot_token"]
 TELEGRAM_CHAT_ID = TELEGRAM_CONFIG["chat_id"]
+
+_idle_timer = None
+_idle_lock = threading.Lock()
+
+
+def _reset_idle_timer():
+    """每次请求后重置 1 分钟 idle 定时器，到期后退出进程释放 FC 实例。"""
+    global _idle_timer
+    with _idle_lock:
+        if _idle_timer:
+            _idle_timer.cancel()
+        _idle_timer = threading.Timer(60, lambda: os._exit(0))
+        _idle_timer.daemon = True
+        _idle_timer.start()
+
+
+@app.after_request
+def _on_request_done(response):
+    _reset_idle_timer()
+    return response
+
 
 DEFAULT_KEYWORDS = [
     '"sign language"',
