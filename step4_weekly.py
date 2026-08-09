@@ -32,7 +32,9 @@ def step4_weekly_summary():
 
     # 1. 获取滴答清单已完成任务（本周 + 上周原始数据用于对比）
     dida = DidaList()
-    dida.updateCookie()
+    if not dida.is_ready():
+        print("❌ Dida token 未配置，跳过")
+        return
     tasks_this_week = dida.getCompletedTasks(startTime=week_ago, endTime=now)
 
     if not tasks_this_week:

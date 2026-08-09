@@ -64,7 +64,9 @@ def step5_breakdown():
     print(f"🏷️  扫描标签: \"{tag}\"")
 
     dida = DidaList()
-    dida.updateCookie()
+    if not dida.is_ready():
+        print("❌ Dida token 未配置，跳过")
+        return
 
     tasks = dida.getFilterTask(tags=[tag])
     if not tasks:

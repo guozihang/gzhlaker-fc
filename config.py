@@ -43,7 +43,7 @@ TELEGRAM_CONFIG = {
 
 # ---- 滴答清单配置 ----
 DIDA_CONFIG = {
-    "phone": _require_env("DIDA_PHONE"),
-    "password": _require_env("DIDA_PASSWORD"),
+    "client_id": _require_env("DIDA_CLIENT_ID"),
+    "client_secret": _require_env("DIDA_CLIENT_SECRET"),
     "breakdown_tag": "拆解",
 }

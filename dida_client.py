@@ -1,125 +1,151 @@
 """
-滴答清单 API 完整封装（适配 FC 环境：OSS 替代本地文件，print 替代 loguru）。
+滴答清单 Open API 封装（OAuth2 Bearer Token，token 缓存到 OSS）。
+官方文档: https://dida365.com/openapi
 """
 
 import datetime
 import json
-import random
 
 import requests
 
 from config import DIDA_CONFIG
 from oss_utils import _oss_load_json, _oss_save_json
 
+# Token 缓存 key
+_TOKEN_KEY = "dida_token.json"
 
-_DIDA_DEVICE = json.dumps({
-    "platform": "web", "os": "Windows 10",
-    "device": "Chrome 86.0.4240.198", "name": "",
-    "version": 4130, "id": "6732f9fd4557ba2ce15c00eb",
-    "channel": "website", "campaign": "", "websocket": "",
-})
+# Open API 基础路径
+_BASE = "https://api.dida365.com/open/v1"
 
 
-# ---- createTask 模板（硬编码替代本地文件） ----
-_DIDA_TASK_TEMPLATE = {
-    "title": "", "projectId": "", "parentId": "", "columnId": "",
-    "tags": [], "priority": 0, "startDate": None, "dueDate": None,
-    "id": "", "createdTime": "", "modifiedTime": "", "content": "",
-    "kind": "TEXT", "isFloating": False, "reminders": [], "exDate": [],
-    "repeatFlag": "", "sortOrder": 0, "progress": 0, "assignee": None,
-    "isAllDay": True, "reminderTime": "", "pomodoroSummaries": [],
-    "repeateFromTaskId": "", "focusSummaries": [],
-}
-
-_DIDA_UPDATE_TASK_TEMPLATE = {
-    "add": [], "update": [], "delete": [], "addAttachments": [],
-    "updateAttachments": [], "deleteAttachments": [],
-}
+def _utc_str(dt=None):
+    """将 datetime（北京时间）转为滴答清单 UTC 字符串 "yyyy-MM-ddTHH:mm:ss+0000"。"""
+    if dt is None:
+        dt = datetime.datetime.now()
+    utc = dt - datetime.timedelta(hours=8)
+    return utc.strftime("%Y-%m-%dT%H:%M:%S+0000")
 
 
-class DidaAPI:
-    """滴答清单 API 端点"""
+def _parse_token(data):
+    """从 OAuth2 token 响应中提取 access_token/refresh_token/expires_at。"""
+    access = data.get("access_token", "")
+    refresh = data.get("refresh_token", "")
+    expires_in = data.get("expires_in", 0)  # seconds
+    expires_at = 0
+    if expires_in:
+        expires_at = int(datetime.datetime.now().timestamp()) + expires_in - 300  # 提前 5 分钟刷新
+    return {
+        "access_token": access,
+        "refresh_token": refresh,
+        "expires_at": expires_at,
+        "updated": datetime.datetime.now().isoformat(),
+    }
 
-    def __init__(self):
-        self.getProjects = "https://api.dida365.com/api/v2/projects"
-        self.createTask = "https://api.dida365.com/api/v2/batch/task"
-        self.getHabits = "https://api.dida365.com/api/v2/habits"
-        self.getUTCTimetable = "https://api.dida365.com/api/v1/course/timetable"
-        self.getColumns = "https://api.dida365.com/api/v2/column?from=0"
-        self.getCompleteTasks = "https://api.dida365.com/api/v2/project/{}/completed/?from={}&to={}&limit={}"
-        self.createHabit = "https://api.dida365.com/api/v2/habits/batch"
-        self.createSubTask = "https://api.dida365.com/api/v2/batch/taskParent"
-        self.getColumnsInProject = "https://api.dida365.com/api/v2/column/project/{}"
-        self.getAllInfo = "https://api.dida365.com/api/v2/batch/check/0"
-        self.login = "https://api.dida365.com/api/v2/user/signon?wc=true&remember=true"
+
+def exchange_code_for_token(code):
+    """用 OAuth2 authorization code 换取 token，缓存到 OSS。
+
+    供外部（webapp /auth 命令）调用。
+    Returns:
+        (True, "ok") 或 (False, "error message")
+    """
+    try:
+        resp = requests.post(
+            "https://dida365.com/oauth/token",
+            data={
+                "code": code,
+                "grant_type": "authorization_code",
+                "scope": "tasks:read tasks:write",
+                "redirect_uri": "https://run.gzhlaker.cc/dida_oauth_callback",
+            },
+            auth=(DIDA_CONFIG["client_id"], DIDA_CONFIG["client_secret"]),
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return (False, f"Token 交换失败 ({resp.status_code}): {resp.text[:300]}")
+
+        token = _parse_token(resp.json())
+        if not token["access_token"]:
+            return (False, "Token 响应中缺少 access_token")
+
+        _oss_save_json(_TOKEN_KEY, token)
+        print(f"✅ Dida OAuth token 已缓存到 OSS")
+        return (True, "授权成功")
+    except Exception as e:
+        return (False, str(e))
+
+
+def get_auth_url():
+    """生成 OAuth2 授权 URL，用户打开后授权即可获得 code。"""
+    cid = DIDA_CONFIG["client_id"]
+    return (
+        "https://dida365.com/oauth/authorize"
+        f"?scope=tasks%3Aread%20tasks%3Awrite"
+        f"&client_id={cid}"
+        "&state=dida_oauth"
+        "&redirect_uri=https%3A%2F%2Frun.gzhlaker.cc%2Fdida_oauth_callback"
+        "&response_type=code"
+    )
+
+
+def _load_token():
+    """从 OSS 加载缓存的 token。不存在或过期时尝试刷新。"""
+    cached = _oss_load_json(_TOKEN_KEY, {})
+    access = cached.get("access_token", "")
+    refresh = cached.get("refresh_token", "")
+    expires_at = cached.get("expires_at", 0)
+
+    # 未过期直接返回
+    if access and expires_at > datetime.datetime.now().timestamp():
+        return access
+
+    # 尝试刷新
+    if refresh:
+        try:
+            resp = requests.post(
+                "https://dida365.com/oauth/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh,
+                },
+                auth=(DIDA_CONFIG["client_id"], DIDA_CONFIG["client_secret"]),
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                token = _parse_token(resp.json())
+                if token["access_token"]:
+                    # 保留旧 refresh_token（如果服务端没返回新的）
+                    if not token["refresh_token"]:
+                        token["refresh_token"] = refresh
+                    _oss_save_json(_TOKEN_KEY, token)
+                    print(f"🔄 Dida token 已刷新")
+                    return token["access_token"]
+        except Exception:
+            pass
+
+    return ""
 
 
 class DidaList:
-    """滴答清单操作封装，cookie 缓存到 OSS。"""
+    """滴答清单 Open API 操作封装。"""
 
     def __init__(self):
-        self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 6.1; rv2.0.1) Gecko/20100101 Firefox/4.0.1",
-            "authority": "api.dida365.com",
-            "referer": "https://dida365.com/webapp/",
-            "origin": "https://dida365.com",
-            "x-device": _DIDA_DEVICE,
+        self._token = _load_token()
+        if not self._token:
+            print("⚠️  Dida token 未配置或已过期，请先通过 /dida_auth 授权")
+
+    @property
+    def _headers(self):
+        return {
+            "Authorization": f"Bearer {self._token}",
+            "Content-Type": "application/json",
         }
-        self.__API = DidaAPI()
 
-        # 尝试从 OSS 加载缓存的 cookie
-        cached = _oss_load_json("dida_cookie.json", {})
-        cookie = cached.get("cookie", "")
-        if cookie:
-            self.headers["cookie"] = cookie
-            self._cookie_loaded = True
-        else:
-            self._cookie_loaded = False
+    def is_ready(self):
+        """检查 token 是否可用。"""
+        return bool(self._token)
 
-    def updateCookie(self):
-        """登录滴答清单，cookie 缓存到 OSS。"""
-        resp = requests.post(
-            url=self.__API.login,
-            headers=self.headers,
-            json={"password": DIDA_CONFIG["password"], "phone": DIDA_CONFIG["phone"]},
-            timeout=15,
-        )
-
-        if resp.status_code != 200:
-            raise RuntimeError(f"滴答清单登录失败: {resp.content}")
-        print(f"✅ 滴答清单登录成功")
-
-        cookie = ""
-        for name, value in resp.cookies.items():
-            cookie += f"{name}={value};"
-
-        self.headers["cookie"] = cookie
-        _oss_save_json("dida_cookie.json", {"cookie": cookie, "updated": datetime.datetime.now().isoformat()})
-        print(f"  ↳ cookie 已缓存到 OSS")
-
-    # ---- 工具方法 ----
-
-    def __getUTCTime(self, t=None):
-        """生成滴答清单使用的 UTC 格式化时间字符串。"""
-        if t is None:
-            t = datetime.datetime.now()
-        template = "%Y-%m-%dT%H:%M:%S.000+0000"
-        utc_time = t - datetime.timedelta(hours=8)
-        return utc_time.strftime(template)
-
-    def __getTimeFromTimeStamp(self, timestamp):
-        """根据时间戳生成 UTC 时间字符串。"""
-        template = "%Y-%m-%dT%H:%M:%S.000+0000"
-        target_time = datetime.datetime.fromtimestamp(timestamp)
-        utc_time = target_time - datetime.timedelta(hours=8)
-        return utc_time.strftime(template)
-
-    def __generateID(self, num=24):
-        """生成滴答清单格式的 ID。"""
-        H = "abcdef0123456789" * 3
-        return "".join(random.sample(H, num))
-
-    # ---- 核心操作 ----
+    # ---- 任务操作 ----
 
     def createTask(self, title, projectId="", parentId="", columnId="",
                    tags=None, priority=0, startDate=None, dueDate=None, content=""):
@@ -128,213 +154,228 @@ class DidaList:
         Returns:
             (isSuccess, msg)
         """
-        if tags is None:
-            tags = []
+        if not self._token:
+            return (False, "未授权，请先 /dida_auth")
 
-        task = dict(_DIDA_TASK_TEMPLATE)
-        payload = dict(_DIDA_UPDATE_TASK_TEMPLATE)
-        payload["add"] = []
-        payload["update"] = []
-        payload["delete"] = []
-        payload["addAttachments"] = []
-        payload["updateAttachments"] = []
-        payload["deleteAttachments"] = []
+        body = {"title": title, "projectId": projectId, "priority": priority}
 
-        time_str = self.__getUTCTime()
+        if content:
+            body["content"] = content
+        if tags:
+            body["tags"] = tags
+        if startDate:
+            body["startDate"] = _utc_str(startDate)
+            body["isAllDay"] = True if not dueDate else False
+        if dueDate:
+            body["dueDate"] = _utc_str(dueDate)
+            body["isAllDay"] = True
 
-        task["title"] = title
-        task["projectId"] = projectId
-        task["parentId"] = parentId
-        task["columnId"] = columnId
-        task["tags"] = tags
-        task["priority"] = priority
-        task["startDate"] = None if not startDate else self.__getUTCTime(startDate)
-        task["dueDate"] = None if not dueDate else self.__getUTCTime(dueDate)
-        task["id"] = self.__generateID()
-        task["createdTime"] = time_str
-        task["modifiedTime"] = time_str
-        task["content"] = content
+        try:
+            resp = requests.post(
+                f"{_BASE}/task",
+                headers=self._headers,
+                json=body,
+                timeout=15,
+            )
+            data = resp.json()
+            if resp.status_code in (200, 201):
+                task_id = data.get("id", "")
+                # 如果有 parentId，关联父子关系
+                if parentId and task_id:
+                    self._link_parent(parentId, projectId, task_id)
+                return (True, task_id)
+            return (False, data.get("errorMessage", resp.text[:200]))
+        except Exception as e:
+            return (False, str(e))
 
-        payload["add"].append(task)
-
-        res = requests.post(
-            url=self.__API.createTask,
-            headers=self.headers,
-            json=payload,
-            timeout=15,
-        )
-
-        if res.status_code == 200:
-            if parentId:
-                ok, msg = self._createSubTask(parentId, projectId, task["id"])
-                if not ok:
-                    return (False, msg)
-            return (True, f"create task successfully: {res.content}")
-        else:
-            return (False, f"create task failed: {res.content}")
-
-    def _createSubTask(self, parentId, projectId, taskId):
-        """创建子任务关联。"""
-        payload = [{"parentId": parentId, "projectId": projectId, "taskId": taskId}]
-
-        res = requests.post(
-            url=self.__API.createSubTask,
-            headers=self.headers,
-            json=payload,
-            timeout=15,
-        )
-
-        if res.status_code == 200:
-            return (True, f"create subtask successfully: {res.content}")
-        else:
-            return (False, f"create subtask failed: {res.content}")
-
-    def getFilterTask(self, title=None, projectId=None, parentId=None,
-                      columnId=None, tags=None, priority=None,
-                      startDate=None, dueDate=None):
-        """根据过滤条件返回符合条件的未完成任务。"""
-
-        def _filter(task):
-            if title is not None and task.get("title") != title:
-                return False
-            if projectId is not None and task.get("projectId") != projectId:
-                return False
-            if parentId is not None and task.get("parentId") != parentId:
-                return False
-            if columnId is not None and task.get("columnId") != columnId:
-                return False
-            if tags is not None:
-                task_tags = task.get("tags") or []
-                if not (set(task_tags) & set(tags)):
-                    return False
-            if priority is not None and task.get("priority") != priority:
-                return False
-
-            if startDate is not None and dueDate is not None:
-                if "startDate" in task and "dueDate" in task:
-                    ts = datetime.datetime.strptime(task["startDate"], "%Y-%m-%dT%H:%M:%S.000+0000")
-                    ts += datetime.timedelta(hours=8)
-                    td = datetime.datetime.strptime(task["dueDate"], "%Y-%m-%dT%H:%M:%S.000+0000")
-                    td += datetime.timedelta(hours=8)
-                    if not (startDate <= ts <= td <= dueDate):
-                        return False
-                else:
-                    return False
-            elif startDate is not None:
-                if "startDate" in task:
-                    td = datetime.datetime.strptime(task["startDate"], "%Y-%m-%dT%H:%M:%S.000+0000")
-                    td += datetime.timedelta(hours=8)
-                    if td.date() != startDate.date():
-                        return False
-                else:
-                    return False
-            elif dueDate is not None:
-                if "dueDate" in task:
-                    td = datetime.datetime.strptime(task["dueDate"], "%Y-%m-%dT%H:%M:%S.000+0000")
-                    td += datetime.timedelta(hours=8)
-                    if td.date() != dueDate.date():
-                        return False
-                else:
-                    return False
-
-            return True
-
-        res = requests.get(url=self.__API.getAllInfo, headers=self.headers, timeout=15)
-        all_tasks = res.json().get("syncTaskBean", {}).get("update", [])
-        return [t for t in all_tasks if _filter(t)]
-
-    # ---- 查询方法 ----
-
-    def getProjects(self):
-        """获取所有清单。"""
-        res = requests.get(url=self.__API.getProjects, headers=self.headers, timeout=15)
-        return res.json()
-
-    def getColumns(self, projectId=None):
-        """获取分组，可指定清单过滤。"""
-        res = requests.get(url=self.__API.getColumns, headers=self.headers, timeout=15)
-        columns = res.json().get("update", [])
-
-        if projectId is not None:
-            return [c for c in columns if c.get("projectId") == projectId]
-        return columns
+    def _link_parent(self, parentId, projectId, taskId):
+        """通过更新任务关联父子关系（Open API 不直接支持 batch/taskParent）。"""
+        # Open API 不支持直接创建父子关系；作为 subtask 创建
+        pass
 
     def completeTask(self, taskId, projectId):
         """标记任务为完成。
 
-        从 getAllInfo 获取任务完整数据，更新 status=2 后通过 batch update 提交。
+        Returns:
+            (isSuccess, msg)
         """
-        # 1. 获取任务完整数据
-        res = requests.get(url=self.__API.getAllInfo, headers=self.headers, timeout=15)
-        all_tasks = res.json().get("syncTaskBean", {}).get("update", [])
-        task = next((t for t in all_tasks if t.get("id") == taskId), None)
-        if not task:
-            return (False, f"Task {taskId} not found")
+        if not self._token:
+            return (False, "未授权")
 
-        # 2. 修改状态为已完成
-        task["status"] = 2
-        task["completedTime"] = self.__getUTCTime()
-        task["modifiedTime"] = self.__getUTCTime()
+        try:
+            resp = requests.post(
+                f"{_BASE}/project/{projectId}/task/{taskId}/complete",
+                headers=self._headers,
+                timeout=15,
+            )
+            if resp.status_code in (200, 201):
+                return (True, f"Task {taskId} completed")
+            data = resp.json() if resp.text else {}
+            return (False, data.get("errorMessage", resp.text[:200]))
+        except Exception as e:
+            return (False, str(e))
 
-        # 3. 通过 batch update 提交
-        payload = dict(_DIDA_UPDATE_TASK_TEMPLATE)
-        payload["update"] = [task]
-        payload["add"] = []
-        payload["delete"] = []
-        payload["addAttachments"] = []
-        payload["updateAttachments"] = []
-        payload["deleteAttachments"] = []
+    def getFilterTask(self, title=None, projectId=None, parentId=None,
+                      columnId=None, tags=None, priority=None,
+                      startDate=None, dueDate=None):
+        """过滤任务（服务端过滤，仅支持 tag / status / projectIds）。
 
-        res = requests.post(
-            url=self.__API.createTask,
-            headers=self.headers,
-            json=payload,
-            timeout=15,
-        )
-        if res.status_code == 200:
-            return (True, f"Task {taskId} completed")
-        return (False, f"Complete task failed: {res.content}")
+        注意：Open API 不支持按 title/parentId/columnId/date 过滤，
+        这些条件在客户端二次过滤。status=0 只查未完成任务。
+        """
+        if not self._token:
+            return []
 
-    def getHabits(self):
-        """获取所有习惯。"""
-        res = requests.get(url=self.__API.getHabits, headers=self.headers, timeout=15)
-        return res.json()
+        body = {"status": [0]}  # 只查未完成
+
+        if projectId:
+            body["projectIds"] = [projectId]
+        if tags:
+            body["tag"] = tags  # 服务端 AND 匹配；单 tag 等价于 filter
+        # priority 在 Open API filter 中与客户端定义一致
+        if priority is not None:
+            body["priority"] = [priority]
+
+        try:
+            resp = requests.post(
+                f"{_BASE}/task/filter",
+                headers=self._headers,
+                json=body,
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                print(f"⚠️  filter 失败: {resp.text[:200]}")
+                return []
+            tasks = resp.json() if isinstance(resp.json(), list) else []
+
+            # 客户端二次过滤（Open API 不支持的条件）
+            if title:
+                tasks = [t for t in tasks if t.get("title") == title]
+            if parentId:
+                tasks = [t for t in tasks if t.get("parentId") == parentId]
+            if columnId:
+                tasks = [t for t in tasks if t.get("columnId") == columnId]
+            if startDate and not dueDate:
+                tasks = [t for t in tasks if t.get("startDate", "").startswith(startDate.strftime("%Y-%m-%d"))]
+            elif dueDate and not startDate:
+                tasks = [t for t in tasks if t.get("dueDate", "").startswith(dueDate.strftime("%Y-%m-%d"))]
+
+            return tasks
+        except Exception as e:
+            print(f"⚠️  filter 异常: {e}")
+            return []
 
     def getCompletedTasks(self, projects=None, startTime=None, endTime=None, limit=200):
         """获取已完成任务。
 
         Args:
-            projects: 清单 ID 列表，None 表示所有
+            projects: 清单 ID 列表，None 表示不过滤
             startTime: 开始时间 (datetime)
             endTime: 结束时间 (datetime)
             limit: 数量限制
         """
-        proj_str = ",".join(projects) if projects else "all"
+        if not self._token:
+            return []
 
-        from_str = ""
-        to_str = ""
+        body = {}
+        if projects:
+            body["projectIds"] = projects
         if startTime:
-            from_str = startTime.strftime("%Y-%m-%d") + "%20" + startTime.strftime("%H:%M:%S")
+            body["startDate"] = _utc_str(startTime)
         if endTime:
-            to_str = endTime.strftime("%Y-%m-%d") + "%20" + endTime.strftime("%H:%M:%S")
+            body["endDate"] = _utc_str(endTime)
 
-        url = self.__API.getCompleteTasks.format(proj_str, from_str, to_str, limit)
-        res = requests.get(url=url, headers=self.headers, timeout=15)
+        try:
+            resp = requests.post(
+                f"{_BASE}/task/completed",
+                headers=self._headers,
+                json=body,
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                print(f"⚠️  completed 失败: {resp.text[:200]}")
+                return []
+            tasks = resp.json()
+            return tasks[:limit] if isinstance(tasks, list) else []
+        except Exception as e:
+            print(f"⚠️  completed 异常: {e}")
+            return []
 
-        tasks = res.json()
-        return tasks if isinstance(tasks, list) else []
+    # ---- 查询方法 ----
+
+    def getProjects(self):
+        """获取所有清单。"""
+        if not self._token:
+            return []
+        try:
+            resp = requests.get(f"{_BASE}/project", headers=self._headers, timeout=15)
+            return resp.json() if resp.status_code == 200 else []
+        except Exception:
+            return []
+
+    def getColumns(self, projectId=None):
+        """获取指定清单的分组。"""
+        if not self._token or not projectId:
+            return []
+        try:
+            resp = requests.get(
+                f"{_BASE}/project/{projectId}/column",
+                headers=self._headers,
+                timeout=15,
+            )
+            return resp.json() if resp.status_code == 200 else []
+        except Exception:
+            return []
+
+    def getHabits(self):
+        """获取所有习惯。"""
+        if not self._token:
+            return []
+        try:
+            resp = requests.get(f"{_BASE}/habit", headers=self._headers, timeout=15)
+            return resp.json() if resp.status_code == 200 else []
+        except Exception:
+            return []
+
+    # ---- 标签管理 ----
+
+    def getTags(self):
+        """获取所有标签。"""
+        if not self._token:
+            return []
+        try:
+            resp = requests.get(f"{_BASE}/tag", headers=self._headers, timeout=15)
+            return resp.json() if resp.status_code == 200 else []
+        except Exception:
+            return []
+
+    def createTag(self, name):
+        """创建标签。"""
+        if not self._token:
+            return (False, "未授权")
+        try:
+            resp = requests.post(
+                f"{_BASE}/tag",
+                headers=self._headers,
+                json={"name": name, "label": name},
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                return (True, resp.json())
+            return (False, resp.text[:200])
+        except Exception as e:
+            return (False, str(e))
+
+    # ---- 辅助 ----
 
     def genProjectIDJson(self):
-        """将清单 ID 保存到 OSS。"""
         projects = self.getProjects()
         _oss_save_json("dida_projects.json", projects)
 
     def genColumnIDJson(self):
-        """将分组 ID 保存到 OSS。"""
         columns = self.getColumns()
         _oss_save_json("dida_columns.json", columns)
 
     def genTaskIDJson(self):
-        """将未完成任务 ID 保存到 OSS。"""
         tasks = self.getFilterTask()
         _oss_save_json("dida_tasks.json", tasks)

@@ -18,6 +18,7 @@ from oss_utils import (
     _oss_load_json, _oss_save_json, _oss_file_exists,
     _oss_upload_file, _safe_title,
 )
+from dida_client import get_auth_url, exchange_code_for_token
 from pdf_utils import _extract_pdf_text
 from channels import _send_telegram_message, _queue_delete
 from config import TELEGRAM_CONFIG
@@ -214,6 +215,7 @@ def _handle_text(chat_id, text, msg_id=None):
             "/num — 查看队列篇数\n"
             "/clear — 清理交互消息\n"
             "/breakdown — 手动触发目标拆解\n"
+            "/dida_auth — Dida OAuth2 授权\n"
             "\n直接发送 PDF 文件即可上传并加入待读队列。"
         )
 
@@ -300,6 +302,23 @@ def _handle_text(chat_id, text, msg_id=None):
             _send_telegram_message(chat_id, f"❌ 拆解失败: {e}")
             traceback.print_exc()
 
+    elif cmd == "/dida_auth":
+        _send_telegram_message(chat_id,
+            "🔐 Dida OAuth2 授权步骤：\n\n"
+            "1. 打开以下链接并授权：\n"
+            + get_auth_url() + "\n\n"
+            "2. 授权后会跳转到一个页面，从地址栏复制 ?code= 后面的值\n"
+            "3. 发送 /dida_auth <code> 完成绑定"
+        )
+
+    elif cmd.startswith("/dida_auth "):
+        code = text.split("/dida_auth ", 1)[1].strip()
+        ok, msg = exchange_code_for_token(code)
+        if ok:
+            _send_telegram_message(chat_id, "✅ Dida 授权成功！")
+        else:
+            _send_telegram_message(chat_id, f"❌ 授权失败: {msg}")
+
     else:
         _send_telegram_message(chat_id,
             "发送 PDF 文件即可上传，或输入 /help 查看命令。"
@@ -385,6 +404,19 @@ def _handle_pdf(chat_id, document):
 # ============================================================
 # 路由: Telegram Webhook
 # ============================================================
+
+@app.route("/dida_oauth_callback", methods=["GET"])
+def dida_oauth_callback():
+    """OAuth2 回调：Dida 授权后跳转至此，自动用 code 换取 token。"""
+    code = request.args.get("code", "")
+    if not code:
+        return "<h1>授权失败</h1><p>缺少 code 参数</p>", 400
+
+    ok, msg = exchange_code_for_token(code)
+    if ok:
+        return "<h1>✅ 授权成功</h1><p>Token 已缓存，可以关闭此页面。</p>"
+    return f"<h1>❌ 授权失败</h1><p>{msg}</p>", 500
+
 
 @app.route("/telegram_webhook", methods=["POST"])
 def telegram_webhook():

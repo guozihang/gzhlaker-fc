@@ -15,8 +15,8 @@
 #   - OPENROUTER_API_KEY          OpenRouter API Key
 #   - TELEGRAM_BOT_TOKEN          Telegram Bot Token
 #   - TELEGRAM_CHAT_ID            Telegram Chat ID
-#   - DIDA_PHONE                  滴答清单手机号
-#   - DIDA_PASSWORD               滴答清单密码
+#   - DIDA_CLIENT_ID              滴答清单 OAuth2 Client ID
+#   - DIDA_CLIENT_SECRET           滴答清单 OAuth2 Client Secret
 # ============================================================
 
 name: Deploy to Aliyun FC
@@ -63,8 +63,8 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          DIDA_PHONE: ${{ secrets.DIDA_PHONE }}
-          DIDA_PASSWORD: ${{ secrets.DIDA_PASSWORD }}
+          DIDA_CLIENT_ID: ${{ secrets.DIDA_CLIENT_ID }}
+          DIDA_CLIENT_SECRET: ${{ secrets.DIDA_CLIENT_SECRET }}
         run: s remove --assume-yes
 
       # 5. 重新创建函数（环境变量从 GitHub Secrets 注入，s.yaml 中 ${env(...)} 自动替换）
@@ -75,8 +75,8 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          DIDA_PHONE: ${{ secrets.DIDA_PHONE }}
-          DIDA_PASSWORD: ${{ secrets.DIDA_PASSWORD }}
+          DIDA_CLIENT_ID: ${{ secrets.DIDA_CLIENT_ID }}
+          DIDA_CLIENT_SECRET: ${{ secrets.DIDA_CLIENT_SECRET }}
         run: s deploy --assume-yes
 
       # 6. 配置 Telegram Webhook（GitHub Actions 服务器可通 Telegram API）
