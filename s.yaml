@@ -11,7 +11,7 @@ resources:
       region: cn-hongkong
       functionName: gzhlaker-processor
       description: 下载/总结/发送论文
-      runtime: python3.10
+      runtime: python3.12
       handler: main.handler
       code: ./
       timeout: 3000
