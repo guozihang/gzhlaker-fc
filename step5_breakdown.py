@@ -2,12 +2,13 @@
 Step 5: 目标拆解 - 扫描带指定标签的滴答清单任务，LLM 拆解为子任务。
 定时触发: 每天 07:00
 
-扫描带标签的未完成任务 → LLM 拆解 → 创建子任务 → 标记原任务完成。
-标签库自动维护: 从 OSS 加载已有标签 → 传给 LLM 复用 → 新标签写回 OSS。
+扫描带标签的未完成任务 → LLM 拆解 → 创建子任务（含四象限）→ 标记原任务完成。
+标签库自动维护: 项目标签存入 OSS，LLM 优先复用。
 """
 
 import datetime
 import json
+import traceback
 
 from openai import OpenAI
 
@@ -16,40 +17,42 @@ from dida_client import DidaList
 from channels import _send_telegram_raw
 from oss_utils import _oss_load_json, _oss_save_json
 
-# 标签库存放路径
 _TAG_LIBRARY_KEY = "dida_tag_library.json"
+
+# 功能标签（封闭集合）
+_FUNCTION_TAGS = {"快速入手", "关键路径", "深度工作", "检查点", "缓冲", "奖励"}
+
+# 领域标签（封闭七类）
+_DOMAIN_TAGS = {"工作", "科研", "学习", "生活", "健康", "财务", "社交"}
+
+# 所有封闭标签（不是项目标签的）
+_CLOSED_TAGS = _FUNCTION_TAGS | _DOMAIN_TAGS
 
 
 def _load_tag_library():
-    """从 OSS 加载已有标签库，返回领域标签列表。"""
+    """从 OSS 加载已有项目标签列表。"""
     data = _oss_load_json(_TAG_LIBRARY_KEY, {})
-    return data.get("domain_tags", [])
+    return data.get("project_tags", [])
 
 
-def _save_tag_library(domain_tags):
-    """将领域标签列表写入 OSS。"""
-    # 去重排序
-    tags = sorted(set(tag for tag in domain_tags if tag and isinstance(tag, str)))
+def _save_tag_library(project_tags):
+    """将项目标签列表写入 OSS。"""
+    tags = sorted(set(t for t in project_tags if t and isinstance(t, str)))
     _oss_save_json(_TAG_LIBRARY_KEY, {
-        "domain_tags": tags,
+        "project_tags": tags,
         "updated": datetime.datetime.now().isoformat(),
     })
     return tags
 
 
-def _collect_domain_tags(subtasks):
-    """从 LLM 返回的子任务中提取所有标签，只保留非功能标签的（领域标签）。
-
-    功能标签白名单: 快速入手, 关键路径, 深度工作, 检查点, 缓冲, 奖励
-    不在白名单内的视为领域标签。
-    """
-    FUNCTION_TAGS = {"快速入手", "关键路径", "深度工作", "检查点", "缓冲", "奖励"}
+def _collect_project_tags(subtasks):
+    """从子任务中提取项目标签（排除功能标签和领域标签后剩下的）。"""
     collected = set()
     for st in subtasks:
         tags = st.get("tags", [])
         if isinstance(tags, list):
             for t in tags:
-                if t and t not in FUNCTION_TAGS:
+                if t and t not in _CLOSED_TAGS:
                     collected.add(t)
     return list(collected)
 
@@ -75,10 +78,9 @@ def step5_breakdown():
 
     print(f"📋 待拆解任务: {len(tasks)} 个")
 
-    # 加载已有标签库
     existing_tags = _load_tag_library()
     if existing_tags:
-        print(f"🏷️  已有领域标签: {', '.join(existing_tags)}")
+        print(f"🏷️  已有项目标签: {', '.join(existing_tags)}")
 
     llm_client = OpenAI(
         api_key=LLM_CONFIG["api_key"],
@@ -102,16 +104,26 @@ def step5_breakdown():
 3. 专注力有限,容易分心
    → 同一天「深度工作」标签不超过 2 个,深度工作后安排轻量任务调节节奏
 
+# 第一步:目标补全(必做,处理模糊输入)
+用户写下的任务经常是模糊的,拆解前必须先补全用户没说清的想法:
+1. 将输入改写为具体目标,写入 refinedGoal 字段:≤40 字,必须包含最终交付物和完成标准
+   例:输入"搞一下论文" → "完成论文实验章节初稿,达到可请导师评审的完整度"
+2. 补全维度包括:最终成果(交付什么)、完成标准(做到什么程度算完)、范围边界(不做什么)
+3. 只填充用户没说的信息,不擅自扩大或改变用户原本意图
+4. 若存在多种合理解读,选对用户画像最友好(启动门槛最低)的一种,其余方向写进 assumptions 供用户核对
+5. 将拆解依赖的关键假设写入 assumptions(0-3 条,每条一句话),假设被推翻则拆解需要重做
+6. 若输入模糊到连方向都无法确定(如只有一个词),仍给出最合理版本,且第一个子任务固定为「澄清目标」型快速入手任务:引导用户用 ≤15 分钟写下期望成果与范围,确保后续任务不跑偏
+
 # 拆解规则
 1. 拆成 3-8 个子任务,按执行顺序排列;单个任务粒度控制在 30-120 分钟,一次坐下即可完成
 2. 第一个子任务为「快速入手」型:打开就能做,30 分钟内获得可见成果,用于打破启动阻力
-3. 每完成 2-3 个推进型任务后,安排一个「检查点」或「缓冲」,吸收延误、巩固成就感
-4. 关键里程碑之后安排一个具体的「奖励」任务(奖励内容要具体,如"看一场电影",而不是"奖励自己")
-5. 若目标本身已足够细、无需拆解,返回空数组(见输出格式)
-6. 若目标描述模糊,按最合理的理解拆解,不要反问,确保第一个任务仍可直接执行
+3. 主动补充用户容易遗漏的环节:前置准备(权限、资料、环境)与收尾动作(检查、提交、备份),总任务数仍不超过 8 个
+4. 每完成 2-3 个推进型任务后,安排一个「检查点」或「缓冲」,吸收延误、巩固成就感
+5. 关键里程碑之后安排一个具体的「奖励」任务(奖励内容要具体,如"看一场电影",而不是"奖励自己")
+6. 若目标本身已足够细、无需拆解,返回空 subtasks(见输出格式)
 
-# 标签体系(双层结构)
-## A. 功能标签(封闭集合,描述任务在计划中的角色,不得自造)
+# 标签体系(三层结构,两层封闭 + 一层受控生成)
+## 第 1 层:功能标签(封闭集合,描述任务在计划中的角色,不得自造)
 - 快速入手:零门槛启动任务(仅用于第 1 个任务或阶段启动点)
 - 关键路径:未完成会阻塞后续所有工作
 - 深度工作:需要 ≥60 分钟连续专注
@@ -119,25 +131,48 @@ def step5_breakdown():
 - 缓冲:机动时间,吸收前面任务的延误
 - 奖励:完成关键节点后的具体自我奖励
 
-## B. 领域标签(自动构建,描述任务所属主题/项目)
-命名与构建规范:
-1. 从目标的主题、项目或领域中提炼,如"论文写作""实验""文献阅读""健身"
-2. 名词短语,2-6 字,粒度适中:能覆盖该目标下多个子任务,不要太宽(如"学习")也不要太窄(如"论文第三章修改")
-3. 同一目标内含义统一:同一概念全程只用同一个标签,禁止同义词混用(如"论文"与"写论文"并存)
-4. 每个目标的领域标签总数 ≤ 5 个,避免标签爆炸
-5. 不得与功能标签重名,不得使用"其他""杂事"等无信息词
-6. 若输入中附带用户「已有标签列表」,优先从中复用,无匹配时再按以上规范新建
+## 第 2 层:领域标签(封闭集合,描述目标所属生活领域,不得自造)
+固定七类:工作 / 科研 / 学习 / 生活 / 健康 / 财务 / 社交
+(此表可按使用者实际场景整体替换,替换后全文须保持一致)
+
+## 第 3 层:项目标签(受控生成,描述目标归属的具体项目)
+命名规范:
+1. 从 refinedGoal(而非原始模糊输入)中提取核心项目名词,如"学位论文""减脂计划""官网改版"
+2. 名词短语,2-8 字,不加标点、日期、程度词,不以动词开头
+3. 一个目标只产生 1 个项目标签:同一拆解的所有推进型子任务共用,拼写完全一致
+4. 若输入附带用户「已有标签列表」,先精确匹配,再近义匹配,有则必须复用,无才新建
+5. 不得与功能标签、领域标签重名,不得使用"其他""杂事"等无信息词
+
+## 标签生成流程(严格按顺序执行)
+1. 读 refinedGoal,判定领域:按「最终交付物归属」从七类中选 1 个;跨领域时按下表顺序取第一个匹配的,兜底为"生活"
+2. 提取项目名词,套用第 3 层命名规范生成项目标签
+3. 为每个子任务选 1-2 个功能标签
+4. 输出前逐项自检:
+   □ 每个子任务的领域标签恰好 1 个且来自七类
+   □ 每个子任务的功能标签 1-2 个且全部来自封闭集合
+   □ 项目标签全目标统一、拼写完全一致、已在已有标签列表中查重
+   □ 无任何自造词、同义重复、标点或日期
 
 ## 每个子任务的标签构成
-- 功能标签 1-2 个 + 领域标签 0-2 个,合计 2-4 个
-- 推进型任务必须至少 1 个领域标签;缓冲、奖励任务可省略领域标签
-- 数组内顺序固定:功能标签在前,领域标签在后
+- 功能标签 1-2 个 + 领域标签恰好 1 个 + 项目标签 0-1 个,合计 2-4 个
+- 推进型任务与检查点必须带项目标签;缓冲、奖励可省略项目标签
+- 数组内顺序固定:功能标签 → 领域标签 → 项目标签
 
-# 优先级规则(priority 字段)
-- 5 = 高:关键路径任务
-- 3 = 中:常规推进任务
-- 1 = 低:缓冲、奖励任务
-- 0 = 普通:可选/锦上添花任务
+# 四象限与优先级规则(对应滴答清单四象限视图)
+1. quadrant 取值 1/2/3/4,含义固定:
+   - 1 = 重要且紧急:立即做
+   - 2 = 重要不紧急:计划做,拆解结果中应占多数
+   - 3 = 不重要但紧急:尽快处理
+   - 4 = 不重要不紧急:可缓做
+2. 判定步骤(先判象限,再映射优先级):
+   - 重要性:直接影响 refinedGoal 交付物的任务 = 重要(关键路径、常规推进任务);辅助性任务 = 不重要(缓冲、奖励、可选项)
+   - 紧急性:阻塞后续任务,或距用户截止日 ≤3 天 = 紧急
+3. quadrant 与 priority 必须满足固定映射(与滴答清单「象限→优先级」规则一致,禁止交叉组合):
+   - quadrant 1 ↔ priority 5(高)
+   - quadrant 2 ↔ priority 3(中)
+   - quadrant 3 ↔ priority 1(低)
+   - quadrant 4 ↔ priority 0(无)
+4. 整体分布约束:quadrant 1 不超过 2 个(都紧急等于都不紧急);quadrant 2 约占一半,把重要的事在变得紧急之前完成
 
 # 日期规则(suggestedDueDate 字段)
 - 以对话中的当前日期为"今天"推算,格式 YYYY-MM-DD
@@ -147,20 +182,25 @@ def step5_breakdown():
 
 # 输出格式(严格遵守)
 - 只输出 JSON 本体:不加 markdown 代码围栏,不输出任何解释文字
-- 字段定义:
+- 顶层结构固定为三个字段,顺序如下:
+  - refinedGoal:字符串,补全后的具体目标(≤40 字,含交付物与完成标准)
+  - assumptions:字符串数组,拆解依赖的关键假设(0-3 条)
+  - subtasks:子任务数组
+- 子任务字段定义:
   - title:不超过 20 字,动词开头
+  - quadrant:整数,1/2/3/4 之一,与 priority 满足固定映射
   - priority:0 / 1 / 3 / 5 之一
   - content:下一步具体动作 + 可验证的完成标志,一句话
-  - tags:功能标签 1-2 个 + 领域标签 0-2 个,功能标签在前
+  - tags:功能标签 1-2 个 + 领域标签恰好 1 个 + 项目标签 0-1 个,按「功能→领域→项目」顺序
   - suggestedDueDate:YYYY-MM-DD
   - estimatedMinutes:整数,预估耗时(分钟)
-- 无需拆解时输出:{"subtasks": []}
+- 无需拆解时输出:{"refinedGoal": "原任务本身", "assumptions": [], "subtasks": []}
 
 # 输出示例
-{"subtasks": [{"title": "列出论文三级大纲", "priority": 5, "content": "打开论文文档,花 20 分钟列出到章节级的三级大纲并保存,写完即完成", "tags": ["快速入手", "关键路径", "论文写作"], "suggestedDueDate": "2026-08-10", "estimatedMinutes": 25}]}"""
+{"refinedGoal": "完成论文实验章节初稿,达到可请导师评审的完整度", "assumptions": ["实验数据已收集完毕", "沿用现有论文大纲不再大改"], "subtasks": [{"title": "列出实验章节小节框架", "quadrant": 1, "priority": 5, "content": "打开论文文档,花 20 分钟列出实验章节的小节标题并保存,写完即完成", "tags": ["快速入手", "关键路径", "科研", "学位论文"], "suggestedDueDate": "2026-08-10", "estimatedMinutes": 25}]}"""
 
     results = []
-    all_new_tags = set(existing_tags)
+    all_project_tags = set(existing_tags)
 
     for task in tasks:
         task_id = task.get("id", "")
@@ -172,10 +212,9 @@ def step5_breakdown():
         print(f"\n{'─' * 40}")
         print(f"🔍 {task_title}")
 
-        # 构建 user prompt，附带已有标签库
         tag_hint = ""
         if existing_tags:
-            tag_hint = f"\n已有领域标签（优先复用）: {', '.join(existing_tags)}"
+            tag_hint = f"\n已有项目标签（优先复用）: {', '.join(existing_tags)}"
 
         user_prompt = f"""任务名称：{task_title}
 任务描述：{task_content or "（无）"}
@@ -189,10 +228,8 @@ def step5_breakdown():
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                # 不加 response_format，free 模型不支持，靠 prompt 约束 JSON 输出
             )
 
-            # 防御：choices 可能为 None（部分模型/网关不支持时）
             choices = getattr(response, "choices", None)
             if not choices:
                 print(f"  ⚠️ LLM 返回无 choices")
@@ -205,7 +242,6 @@ def step5_breakdown():
                 results.append({"title": task_title, "status": "skip", "reason": "空返回"})
                 continue
 
-            # 去掉可能的 markdown 代码围栏
             raw = raw.strip()
             if raw.startswith("```"):
                 lines = raw.split("\n")
@@ -217,7 +253,16 @@ def step5_breakdown():
                 results.append({"title": task_title, "status": "error", "reason": "返回非 JSON 对象"})
                 continue
 
+            refined_goal = parsed.get("refinedGoal", "")
+            assumptions = parsed.get("assumptions", [])
             subtasks = parsed.get("subtasks", [])
+
+            if refined_goal:
+                print(f"  🎯 {refined_goal}")
+            if assumptions:
+                for a in assumptions:
+                    print(f"  💭 假设: {a}")
+
             if not subtasks:
                 print(f"  ➖ 无需拆解，直接标记完成")
                 dida.completeTask(task_id, project_id)
@@ -236,10 +281,10 @@ def step5_breakdown():
             results.append({"title": task_title, "status": "error", "reason": str(e)})
             continue
 
-        # 收集新领域标签
-        new_tags = _collect_domain_tags(subtasks)
+        # 收集新项目标签
+        new_tags = _collect_project_tags(subtasks)
         for t in new_tags:
-            all_new_tags.add(t)
+            all_project_tags.add(t)
 
         # 创建子任务
         created = 0
@@ -260,6 +305,9 @@ def step5_breakdown():
             if not isinstance(tags, list):
                 tags = [str(tags)] if tags else []
 
+            # quadrant 用于日志展示
+            quadrant = st.get("quadrant", 0)
+
             try:
                 ok, msg = dida.createTask(
                     title=title,
@@ -271,9 +319,10 @@ def step5_breakdown():
                 )
                 if ok:
                     created += 1
+                    quad_str = f" Q{quadrant}" if quadrant else ""
                     tag_str = f" [{', '.join(tags)}]" if tags else ""
                     date_str = f" 📅{date_str}" if date_str else ""
-                    print(f"  ✅{date_str}{tag_str} {title}")
+                    print(f"  ✅{quad_str}{date_str}{tag_str} {title}")
                 else:
                     print(f"  ❌ {title} — {msg}")
             except Exception as e:
@@ -285,10 +334,10 @@ def step5_breakdown():
 
         results.append({"title": task_title, "status": "done", "created": created, "total": len(subtasks)})
 
-    # 保存标签库
-    saved_tags = _save_tag_library(list(all_new_tags))
+    # 保存项目标签库
+    saved_tags = _save_tag_library(list(all_project_tags))
     if saved_tags:
-        print(f"\n🏷️  标签库已更新: {len(saved_tags)} 个领域标签")
+        print(f"\n🏷️  项目标签库已更新: {len(saved_tags)} 个")
 
     # 汇总
     print(f"\n{'=' * 50}")
@@ -301,7 +350,7 @@ def step5_breakdown():
         f"拆解: {done} 个 → 共 {total_created} 个子任务",
     ]
     if saved_tags:
-        lines.append(f"标签库: {len(saved_tags)} 个领域标签")
+        lines.append(f"项目标签库: {len(saved_tags)} 个")
 
     for r in results:
         icon = {"done": "✅", "noop": "➖", "skip": "⚠️", "error": "❌"}.get(r["status"], "?")
