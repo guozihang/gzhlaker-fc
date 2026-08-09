@@ -125,9 +125,13 @@ def _send_telegram_message(chat_id, text, parse_mode=None):
         print("  ⚠️ Telegram 未配置 (TELEGRAM_BOT_TOKEN)")
         return False
 
+    payload = {"chat_id": chat_id, "text": text}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+
     r = requests.post(
         f"https://api.telegram.org/bot{bot}/sendMessage",
-        json={"chat_id": chat_id, "text": text, "parse_mode": parse_mode},
+        json=payload,
         timeout=10,
     ).json()
 
