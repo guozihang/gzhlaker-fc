@@ -11,6 +11,7 @@ Step 5: 目标拆解 - 扫描带指定标签的滴答清单任务，LLM 拆解�
 import datetime
 import json
 import re
+import time
 import traceback
 
 from openai import OpenAI
@@ -327,35 +328,56 @@ def step5_breakdown():
 今天日期：{today.strftime('%Y-%m-%d')}{tag_hint}{conflict_hint}"""
 
         try:
-            response = llm_client.chat.completions.create(
-                model=LLM_CONFIG["model"],
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            )
+            raw = None
+            # 最多尝试 2 次，应对安全过滤拦截返回 "User Safety: safe" 等非 JSON
+            for attempt in range(2):
+                response = llm_client.chat.completions.create(
+                    model=LLM_CONFIG["model"],
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                )
 
-            choices = getattr(response, "choices", None)
-            if not choices:
-                print(f"  ⚠️ LLM 返回无 choices")
-                results.append({"title": task_title, "status": "skip", "reason": "choices 为空"})
-                continue
+                choices = getattr(response, "choices", None)
+                if not choices:
+                    raw = None
+                    continue
 
-            raw = choices[0].message.content
-            if not raw:
-                print(f"  ⚠️ LLM 返回空内容")
-                results.append({"title": task_title, "status": "skip", "reason": "空返回"})
-                continue
+                raw = choices[0].message.content
+                if not raw:
+                    continue
 
-            raw = raw.strip()
-            if raw.startswith("```"):
-                lines = raw.split("\n")
-                raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+                raw = raw.strip()
+                if raw.startswith("```"):
+                    lines = raw.split("\n")
+                    raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
 
-            parsed = json.loads(raw)
-            if not isinstance(parsed, dict):
-                print(f"  ⚠️ LLM 返回非 JSON 对象: {raw[:200]}")
-                results.append({"title": task_title, "status": "error", "reason": "返回非 JSON 对象"})
+                # 检查是否为安全过滤响应
+                if raw.lower().startswith("user safety") or raw.lower().startswith("safety"):
+                    print(f"  ⚠️ 安全过滤拦截 (attempt {attempt+1}): {raw[:100]}")
+                    time.sleep(1)
+                    continue
+
+                # 尝试解析 JSON
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict):
+                        break  # 成功
+                except json.JSONDecodeError:
+                    if attempt == 0:
+                        print(f"  ⚠️ JSON 解析失败 (attempt 1), 重试: {raw[:100]}")
+                        time.sleep(1)
+                    else:
+                        raise  # 最后一次失败，抛给外层 except
+            else:
+                # 循环正常结束（2 次都失败）
+                if raw and raw.lower().startswith("user safety"):
+                    print(f"  ⚠️ LLM 安全过滤拦截，跳过")
+                    results.append({"title": task_title, "status": "skip", "reason": "安全过滤拦截"})
+                else:
+                    print(f"  ⚠️ LLM 返回无效: {str(raw)[:200]}")
+                    results.append({"title": task_title, "status": "error", "reason": "返回无效"})
                 continue
 
             refined_goal = parsed.get("refinedGoal", "")
