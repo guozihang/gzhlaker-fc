@@ -3,6 +3,7 @@ Step 1: 从 arxiv 下载论文并抽取文本内容。
 定时触发: 00:00 / 08:00 / 16:00
 """
 
+import datetime
 import os
 import time
 
@@ -99,9 +100,9 @@ def step1_download_and_extract():
                     print(f"  ⏰ 剩余时间 {remaining:.0f}s 不足 {_MIN_REMAINING}s，停止处理新论文")
                     break
 
-                # 过滤旧论文
-                if result.published.strftime("%Y-%m-%d") < "2025-04-20":
-                    continue
+                # 过滤旧论文：只保留最近 30 天
+    if result.published.replace(tzinfo=None) < datetime.datetime.now() - datetime.timedelta(days=30):
+        continue
 
                 # 生成安全的文件名（也用作论文唯一 ID）
                 safe_title = _safe_title(result.title)
