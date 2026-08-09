@@ -78,3 +78,12 @@ jobs:
           DIDA_PHONE: ${{ secrets.DIDA_PHONE }}
           DIDA_PASSWORD: ${{ secrets.DIDA_PASSWORD }}
         run: s deploy --assume-yes
+
+      # 6. 配置 Telegram Webhook（GitHub Actions 服务器可通 Telegram API）
+      - name: Setup Telegram Webhook
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL || 'https://run.gzhlaker.cc/telegram_webhook' }}
+        run: |
+          echo "📡 注册 webhook: $WEBHOOK_URL"
+          curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook?url=${WEBHOOK_URL}" | python3 -m json.tool
