@@ -54,10 +54,10 @@ resources:
         TELEGRAM_BOT_TOKEN: ${env(TELEGRAM_BOT_TOKEN)}
         TELEGRAM_CHAT_ID: ${env(TELEGRAM_CHAT_ID)}
         # 滴答清单配置
-        DIDA_USERNAME: ${env(DIDA_USERNAME)}
+        DIDA_PHONE: ${env(DIDA_PHONE)}
         DIDA_PASSWORD: ${env(DIDA_PASSWORD)}
         # 默认发送通道
-        SEND_CHANNELS: feishu
+        SEND_CHANNELS: telegram
       triggers:
         # ---- Step 1: 下载论文 + 抽取文本 (每天 3 次: 00:00 / 08:00 / 16:00) ----
         - triggerName: step1-download-extract

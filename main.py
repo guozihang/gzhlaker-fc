@@ -83,7 +83,7 @@ TELEGRAM_CONFIG = {
 
 # ---- 滴答清单配置 ----
 DIDA_CONFIG = {
-    "username": _require_env("DIDA_USERNAME"),
+    "phone": _require_env("DIDA_PHONE"),
     "password": _require_env("DIDA_PASSWORD"),
 }
 
@@ -745,7 +745,7 @@ def _dida_get_cookie():
     resp = requests.post(
         url=_DIDA_LOGIN_URL,
         headers={"x-device": _DIDA_DEVICE},
-        json={"password": DIDA_CONFIG["password"], "phone": DIDA_CONFIG["username"]},
+        json={"password": DIDA_CONFIG["password"], "phone": DIDA_CONFIG["phone"]},
         timeout=15,
     )
 
