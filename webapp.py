@@ -19,7 +19,7 @@ from oss_utils import (
     _oss_upload_file, _safe_title,
 )
 from pdf_utils import _extract_pdf_text
-from channels import _send_telegram_message
+from channels import _send_telegram_message, _queue_delete
 from config import TELEGRAM_CONFIG
 
 
@@ -365,16 +365,22 @@ def telegram_webhook():
             print(f"⛔ 未授权 chat_id: {chat_id}")
             return jsonify({"ok": True})
 
+        msg_id = message.get("message_id")
+
         # 文本命令
         text = message.get("text", "")
         if text:
             _handle_text(chat_id, text)
+            if msg_id:
+                _queue_delete(chat_id, msg_id)
             return jsonify({"ok": True})
 
         # PDF 上传
         document = message.get("document")
         if document:
             _handle_pdf(chat_id, document)
+            if msg_id:
+                _queue_delete(chat_id, msg_id)
             return jsonify({"ok": True})
 
         # 非文本非文件
