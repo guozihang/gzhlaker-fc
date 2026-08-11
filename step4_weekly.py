@@ -7,6 +7,7 @@ Step 4: 每周总结 - 从滴答清单获取本周已完成任务，通过 LLM �
 
 import datetime
 import json
+import time
 
 from openai import OpenAI
 
@@ -163,13 +164,43 @@ def step4_weekly_summary():
             {"role": "user", "content": user_prompt},
         ]
 
-        response = llm_client.chat.completions.create(
-            model=LLM_CONFIG["model"],
-            messages=messages,
-        )
+        raw = None
+        # 最多尝试 2 次，应对 OpenRouter 安全过滤拦截返回 "User Safety: safe" 等非 JSON
+        for attempt in range(2):
+            response = llm_client.chat.completions.create(
+                model=LLM_CONFIG["model"],
+                messages=messages,
+            )
 
-        if response.choices[0].message.content:
-            result = response.choices[0].message.content
+            choices = getattr(response, "choices", None)
+            if not choices:
+                raw = None
+                continue
+
+            raw = choices[0].message.content
+            if not raw:
+                continue
+
+            raw = raw.strip()
+
+            # 检查是否为安全过滤响应
+            if raw.lower().startswith("user safety") or raw.lower().startswith("safety"):
+                print(f"  ⚠️ 安全过滤拦截 (attempt {attempt+1}): {raw[:100]}")
+                time.sleep(1)
+                continue
+
+            # 正常响应，跳出重试循环
+            break
+        else:
+            # 循环正常结束（2 次都失败）
+            if raw and (raw.lower().startswith("user safety") or raw.lower().startswith("safety")):
+                print("❌ LLM 安全过滤拦截，周报生成跳过")
+            else:
+                print(f"❌ LLM 返回无效: {str(raw)[:200]}")
+            return
+
+        if raw:
+            result = raw
             print(f"✅ 周报生成成功 ({len(result)} 字符)")
 
             # 4. 保存到 OSS
