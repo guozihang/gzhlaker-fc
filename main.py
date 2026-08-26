@@ -7,7 +7,6 @@
   周一 08:00        → {"step": "weekly_summary"}      每周总结
   每天 23:40        → {"step": "breakdown"}           目标拆解
   每天 07:00        → {"step": "daily_digest"}        每日速递 (GitHub/油价/天气/新闻 + 语音)
-  (ccf_check 手动触发)
 
 本地测试:
   python main.py download_extract
@@ -15,7 +14,6 @@
   python main.py weekly_summary
   python main.py breakdown
   python main.py daily_digest
-  python main.py ccf_check
 """
 
 import datetime
@@ -28,7 +26,6 @@ from step2_summarize import step2_summarize
 from step4_weekly import step4_weekly_summary
 from step5_breakdown import step5_breakdown
 from step6_digest import step6_daily_digest
-from ccf_check import step_ccf_check
 
 
 # 步骤路由表: step → func
@@ -38,7 +35,6 @@ _STEP_MAP = {
     "weekly_summary":   step4_weekly_summary,
     "breakdown":        step5_breakdown,
     "daily_digest":     step6_daily_digest,
-    "ccf_check":        step_ccf_check,
 }
 
 
@@ -52,7 +48,6 @@ def handler(event, context=None):
       "weekly_summary"    每周总结
       "breakdown"         目标拆解
       "daily_digest"      每日速递 (GitHub/油价/天气/新闻 + 语音)
-      "ccf_check"         CCF 投稿截止提醒
     """
     if isinstance(event, bytes):
         event = event.decode("utf-8")
