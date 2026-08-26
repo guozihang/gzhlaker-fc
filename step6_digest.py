@@ -430,9 +430,9 @@ def _tts_to_mp3(script):
         return None
     try:
         client = OpenAI(api_key=LLM_CONFIG["api_key"], base_url=LLM_CONFIG["base_url"], timeout=120.0)
-        # voice 为必填参数（SDK 层强制），未配置时用 Flux 默认音色
+        # voice 是 SDK 层必填参数，空字符串=模型默认音色（fish-audio 自动识别中文）
         kwargs = {"model": NEWS_CONFIG["tts_model"], "input": script,
-                  "voice": NEWS_CONFIG["tts_voice"] or "flux-alexis-en",
+                  "voice": NEWS_CONFIG["tts_voice"] or "",
                   "response_format": "mp3"}
         resp = client.audio.speech.create(**kwargs)
         audio = resp.read() if hasattr(resp, "read") else resp

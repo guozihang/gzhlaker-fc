@@ -59,8 +59,8 @@ resources:
         NEWS_MAX_ITEMS: '5'
         NEWS_RETENTION_DAYS: '7'
         VOICE_ENABLED: '1'
-        TTS_MODEL: deepgram/flux-tts:free
-        TTS_VOICE: flux-alexis-en
+        TTS_MODEL: fish-audio/s2.1-pro-free:free
+        TTS_VOICE: ''
         OIL_PAGE: http://www.qiyoujiage.com/neimenggu.shtml
         WEATHER_URL: ''
       triggers:
