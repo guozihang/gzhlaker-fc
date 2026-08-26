@@ -6,6 +6,7 @@
   02:00/10:00/18:00 → {"step": "summarize"}           大模型总结 + Telegram 推送
   周一 08:00        → {"step": "weekly_summary"}      每周总结
   每天 23:40        → {"step": "breakdown"}           目标拆解
+  每天 07:00        → {"step": "daily_digest"}        每日速递 (GitHub/油价/天气/新闻 + 语音)
   (ccf_check 手动触发)
 
 本地测试:
@@ -13,6 +14,7 @@
   python main.py summarize
   python main.py weekly_summary
   python main.py breakdown
+  python main.py daily_digest
   python main.py ccf_check
 """
 
@@ -25,6 +27,7 @@ from step1_download import step1_download_and_extract
 from step2_summarize import step2_summarize
 from step4_weekly import step4_weekly_summary
 from step5_breakdown import step5_breakdown
+from step6_digest import step6_daily_digest
 from ccf_check import step_ccf_check
 
 
@@ -34,6 +37,7 @@ _STEP_MAP = {
     "summarize":        step2_summarize,
     "weekly_summary":   step4_weekly_summary,
     "breakdown":        step5_breakdown,
+    "daily_digest":     step6_daily_digest,
     "ccf_check":        step_ccf_check,
 }
 
@@ -46,6 +50,8 @@ def handler(event, context=None):
       "download_extract"  下载论文 + 抽取文本
       "summarize"         大模型总结 + Telegram 推送
       "weekly_summary"    每周总结
+      "breakdown"         目标拆解
+      "daily_digest"      每日速递 (GitHub/油价/天气/新闻 + 语音)
       "ccf_check"         CCF 投稿截止提醒
     """
     if isinstance(event, bytes):

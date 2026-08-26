@@ -46,3 +46,15 @@ DIDA_CONFIG = {
     "client_id": _require_env("DIDA_CLIENT_ID"),
     "client_secret": _require_env("DIDA_CLIENT_SECRET"),
 }
+
+# ---- 每日速递配置 ----
+NEWS_CONFIG = {
+    "trending_n":          int(_env("TRENDING_N", "5")),          # GitHub 板块条数
+    "news_max":            int(_env("NEWS_MAX_ITEMS", "5")),      # 新闻板块条数
+    "news_retention_days": int(_env("NEWS_RETENTION_DAYS", "7")), # 去重账本保留期
+    "oil_page":            _env("OIL_PAGE", "http://www.qiyoujiage.com/neimenggu.shtml"),
+    "weather_url":         _env("WEATHER_URL", ""),               # 留空用内置呼和浩特 URL
+    "voice_enabled":       _env("VOICE_ENABLED", "1").lower() not in ("0", "false", "no"),
+    "tts_model":           _env("TTS_MODEL", "fish-audio/s2.1-pro-free:free"),
+    "tts_voice":           _env("TTS_VOICE", ""),                 # 留空=模型默认音色
+}

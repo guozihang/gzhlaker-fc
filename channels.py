@@ -133,6 +133,29 @@ def _send_telegram_raw(text, parse_mode="Markdown", prefix="", queue_delete=Fals
     return ok == total
 
 
+def _send_telegram_audio(mp3_path, title):
+    """发送 MP3 语音到 Telegram（multipart 上传）。"""
+    bot = TELEGRAM_CONFIG["bot_token"]
+    cid = TELEGRAM_CONFIG["chat_id"]
+    if not bot or not cid:
+        print("  ⚠️ Telegram 未配置 (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)")
+        return False
+    try:
+        with open(mp3_path, "rb") as f:
+            r = requests.post(
+                f"https://api.telegram.org/bot{bot}/sendAudio",
+                data={"chat_id": cid, "title": title},
+                files={"audio": ("daily_digest.mp3", f, "audio/mpeg")},
+                timeout=60,
+            ).json()
+        ok = bool(r.get("ok"))
+        print(f"  {'✅' if ok else '❌'} Telegram 语音: {r.get('description', 'ok')}")
+        return ok
+    except Exception as e:
+        print(f"  ❌ Telegram 语音异常: {e}")
+        return False
+
+
 def _send_telegram_message(chat_id, text, parse_mode=None):
     """发送文本到指定 Telegram 会话，自动在 10 分钟后删除。"""
     bot = TELEGRAM_CONFIG["bot_token"]

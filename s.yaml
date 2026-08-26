@@ -54,6 +54,15 @@ resources:
         DIDA_CLIENT_SECRET: ${env(DIDA_CLIENT_SECRET)}
         # 默认发送通道
         SEND_CHANNELS: telegram
+        # 每日速递调优（均为可选，有代码默认值）
+        TRENDING_N: 5
+        NEWS_MAX_ITEMS: 5
+        NEWS_RETENTION_DAYS: 7
+        VOICE_ENABLED: 1
+        TTS_MODEL: fish-audio/s2.1-pro-free:free
+        TTS_VOICE: ''
+        OIL_PAGE: http://www.qiyoujiage.com/neimenggu.shtml
+        WEATHER_URL: ''
       triggers:
         # ---- Flask API (HTTP) ----
         - triggerName: http-api
@@ -103,3 +112,12 @@ resources:
             cronExpression: CRON_TZ=Asia/Shanghai 0 0 8 * * 1
             enable: true
             payload: '{"step":"weekly_summary"}'
+        # ---- Step 6: 每日信息速递 (每天 07:00) ----
+        - triggerName: step6-daily-digest
+          triggerType: timer
+          qualifier: LATEST
+          description: ''
+          triggerConfig:
+            cronExpression: CRON_TZ=Asia/Shanghai 0 0 7 * * *
+            enable: true
+            payload: '{"step":"daily_digest"}'
