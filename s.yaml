@@ -55,10 +55,10 @@ resources:
         # 默认发送通道
         SEND_CHANNELS: telegram
         # 每日速递调优（均为可选，有代码默认值）
-        TRENDING_N: 5
-        NEWS_MAX_ITEMS: 5
-        NEWS_RETENTION_DAYS: 7
-        VOICE_ENABLED: 1
+        TRENDING_N: '5'
+        NEWS_MAX_ITEMS: '5'
+        NEWS_RETENTION_DAYS: '7'
+        VOICE_ENABLED: '1'
         TTS_MODEL: fish-audio/s2.1-pro-free:free
         TTS_VOICE: ''
         OIL_PAGE: http://www.qiyoujiage.com/neimenggu.shtml
