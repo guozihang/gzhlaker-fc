@@ -60,7 +60,8 @@ resources:
         NEWS_RETENTION_DAYS: '7'
         VOICE_ENABLED: '1'
         TTS_MODEL: fish-audio/s2.1-pro-free:free
-        TTS_VOICE: ''
+        # 新闻男（Fish 公开音色库，中文播报风格；voice 必填，OpenRouter 拒绝空串）
+        TTS_VOICE: 2926cb350f1a426d800bf8c360c3cb94
         OIL_PAGE: http://www.qiyoujiage.com/neimenggu.shtml
         WEATHER_URL: ''
       triggers:

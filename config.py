@@ -56,5 +56,5 @@ NEWS_CONFIG = {
     "weather_url":         _env("WEATHER_URL", ""),               # 留空用内置呼和浩特 URL
     "voice_enabled":       _env("VOICE_ENABLED", "1").lower() not in ("0", "false", "no"),
     "tts_model":           _env("TTS_MODEL", "fish-audio/s2.1-pro-free:free"),
-    "tts_voice":           _env("TTS_VOICE", ""),                 # 留空=模型默认音色（83 语种自动识别，中文直接可用）
+    "tts_voice":           _env("TTS_VOICE", "2926cb350f1a426d800bf8c360c3cb94"),  # 新闻男（Fish 公开音色库，中文播报）
 }

@@ -198,6 +198,25 @@ def _llm_complete(system_prompt, user_prompt, json_mode=False, temperature=0.3):
     return None
 
 
+def _parse_json_lenient(raw):
+    """宽容解析 LLM 输出的 JSON：剥 markdown 代码块，失败则截取首个 {...}。"""
+    text = raw.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        pass
+    m = re.search(r"\{.*\}", text, re.S)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except (json.JSONDecodeError, ValueError):
+            return None
+    return None
+
+
 # ============================================================
 # 板块 1: GitHub Trending
 # ============================================================
@@ -371,7 +390,14 @@ def _news_fetch_and_filter(sources, seen):
     if not raw:
         raise RuntimeError("新闻筛选 LLM 无有效返回")
 
-    data = json.loads(raw)
+    data = _parse_json_lenient(raw)
+    if data is None:
+        # 输出不是合法 JSON（markdown 包裹/自由文本），加严指令重试一次
+        raw = _llm_complete(_NEWS_FILTER_SYSTEM + " 你的回复必须是且只能是合法 JSON，不要用 markdown 代码块包裹。",
+                            user_prompt, json_mode=True, temperature=0.3)
+        data = _parse_json_lenient(raw) if raw else None
+    if data is None:
+        raise RuntimeError("新闻筛选 LLM 输出非 JSON")
     selected = []
     for item in data.get("items", []):
         if not item.get("include"):
@@ -430,9 +456,9 @@ def _tts_to_mp3(script):
         return None
     try:
         client = OpenAI(api_key=LLM_CONFIG["api_key"], base_url=LLM_CONFIG["base_url"], timeout=120.0)
-        # voice 是 SDK 层必填参数，空字符串=模型默认音色（fish-audio 自动识别中文）
+        # voice 必填（SDK 层强制 + OpenRouter 拒绝空串），兜底用新闻男中文音色
         kwargs = {"model": NEWS_CONFIG["tts_model"], "input": script,
-                  "voice": NEWS_CONFIG["tts_voice"] or "",
+                  "voice": NEWS_CONFIG["tts_voice"] or "2926cb350f1a426d800bf8c360c3cb94",
                   "response_format": "mp3"}
         resp = client.audio.speech.create(**kwargs)
         audio = resp.read() if hasattr(resp, "read") else resp
