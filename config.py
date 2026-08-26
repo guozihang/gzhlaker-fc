@@ -55,6 +55,6 @@ NEWS_CONFIG = {
     "oil_page":            _env("OIL_PAGE", "http://www.qiyoujiage.com/neimenggu.shtml"),
     "weather_url":         _env("WEATHER_URL", ""),               # 留空用内置呼和浩特 URL
     "voice_enabled":       _env("VOICE_ENABLED", "1").lower() not in ("0", "false", "no"),
-    "tts_model":           _env("TTS_MODEL", "fish-audio/s2.1-pro-free:free"),
-    "tts_voice":           _env("TTS_VOICE", ""),                 # 留空=模型默认音色
+    "tts_model":           _env("TTS_MODEL", "deepgram/flux-tts:free"),
+    "tts_voice":           _env("TTS_VOICE", "flux-alexis-en"),   # Flux 音色: flux-<name>-en
 }

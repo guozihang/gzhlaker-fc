@@ -28,6 +28,8 @@ def _oss_load_json(filename, default=None, internal=True):
         data = json.loads(content)
         print(f"✅ 从 OSS 读取 {filename} ({_describe(data)} 条记录)")
         return data
+    except oss2.exceptions.NoSuchKey:
+        return default  # 首次运行文件不存在，静默视为空
     except Exception as e:
         print(f"⚠️ 读取 {filename} 失败: {e}")
         return default

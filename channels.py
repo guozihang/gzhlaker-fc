@@ -30,10 +30,12 @@ def _send_to_telegram(paper_title, paper_info):
     text = _fmt_telegram(paper_title, paper_info)
 
     def _post(txt, html=True):
+        payload = {"chat_id": cid, "text": txt, "disable_web_page_preview": False}
+        if html:
+            payload["parse_mode"] = "HTML"
         return requests.post(
             f"https://api.telegram.org/bot{bot}/sendMessage",
-            json={"chat_id": cid, "text": txt, "parse_mode": "HTML" if html else None,
-                  "disable_web_page_preview": False},
+            json=payload,
             timeout=10,
         ).json()
 
@@ -103,10 +105,12 @@ def _send_telegram_raw(text, parse_mode="Markdown", prefix="", queue_delete=Fals
         else:
             body = part
 
+        payload = {"chat_id": cid, "text": body, "disable_web_page_preview": True}
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
         r = requests.post(
             f"https://api.telegram.org/bot{bot}/sendMessage",
-            json={"chat_id": cid, "text": body, "parse_mode": parse_mode,
-                  "disable_web_page_preview": True},
+            json=payload,
             timeout=10,
         ).json()
 

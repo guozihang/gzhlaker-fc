@@ -26,7 +26,7 @@ from channels import _send_telegram_raw, _send_telegram_audio
 
 
 _SOURCES = [
-    {"name": "Hacker News Best", "url": "https://hnrss.org/best"},
+    {"name": "Hacker News Best", "url": "https://news.ycombinator.com/rss"},
     {"name": "量子位", "url": "https://www.qbitai.com/feed"},
 ]
 
@@ -430,9 +430,10 @@ def _tts_to_mp3(script):
         return None
     try:
         client = OpenAI(api_key=LLM_CONFIG["api_key"], base_url=LLM_CONFIG["base_url"], timeout=120.0)
-        kwargs = {"model": NEWS_CONFIG["tts_model"], "input": script, "response_format": "mp3"}
-        if NEWS_CONFIG["tts_voice"]:
-            kwargs["voice"] = NEWS_CONFIG["tts_voice"]
+        # voice 为必填参数（SDK 层强制），未配置时用 Flux 默认音色
+        kwargs = {"model": NEWS_CONFIG["tts_model"], "input": script,
+                  "voice": NEWS_CONFIG["tts_voice"] or "flux-alexis-en",
+                  "response_format": "mp3"}
         resp = client.audio.speech.create(**kwargs)
         audio = resp.read() if hasattr(resp, "read") else resp
         path = "/tmp/daily_digest.mp3"
