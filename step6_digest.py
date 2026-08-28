@@ -60,6 +60,16 @@ _WMO_TEXT = {
 # 通用工具
 # ============================================================
 
+# 北京时间时区：FC 容器默认 UTC，07:00 CST 触发时容器里还是前一天 23:00，
+# date.today() 会差一天。所有"今天"一律用固定 UTC+8 计算，不依赖容器 TZ。
+_CN_TZ = datetime.timezone(datetime.timedelta(hours=8))
+
+
+def _cn_today():
+    """北京时间今天的日期（不依赖容器 TZ 环境变量）。"""
+    return datetime.datetime.now(_CN_TZ).date()
+
+
 def _digest_hash(url, feed_name, title):
     """URL 规范化后 sha1 前 16 位；无 URL 时用 feed|title。"""
     key = (url or "").strip()
@@ -245,7 +255,7 @@ def _trending_items(seen):
             move = "(排名变化)" if prev.get("stamp") != title else ""
         else:
             move = "(新上榜)"
-        seen[h] = {"date": datetime.date.today().isoformat(), "section": "trending", "stamp": title}
+        seen[h] = {"date": _cn_today().isoformat(), "section": "trending", "stamp": title}
         result.append((title, intro, link, move))
     return result
 
@@ -295,7 +305,7 @@ def _oil_items(seen):
                 delta = "92# 与上次持平"
         except (ValueError, KeyError):
             delta = ""
-    seen[key] = {"date": datetime.date.today().isoformat(), "section": "oil",
+    seen[key] = {"date": _cn_today().isoformat(), "section": "oil",
                  "oil92": prices.get("92#", "")}
 
     return {"prices": prices, "adjust": adjust, "rmb_t": rmb_t,
@@ -360,7 +370,7 @@ def _news_fetch_and_filter(sources, seen):
                 h = _digest_hash(it["link"], src["name"], it["title"])
                 if h in seen_acc:
                     continue
-                seen_acc[h] = {"date": datetime.date.today().isoformat(),
+                seen_acc[h] = {"date": _cn_today().isoformat(),
                                "section": "news", "stamp": it["title"]}
                 recent.append(it)
         recent.sort(key=lambda x: x["date"] or datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc),
@@ -421,18 +431,26 @@ _SCRIPT_SYSTEM = """你是每日速递的播报员。根据给定的信息写一
 
 
 def _build_script(sections):
-    """用 LLM 生成语音稿（含穿衣推荐）；失败时用简单模板拼稿。"""
+    """用 LLM 生成语音稿（含穿衣推荐）；失败时用简单模板拼稿。
+
+    系统提示要求"开头问候+日期"，但模型本身不知道今天几号，必须把日期
+    显式喂给它——否则它只能拿上下文里唯一的日期（油价"下次调价"）瞎编，
+    导致语音稿连续几天报同一个日期。
+    """
     info = "\n\n".join(f"[{k}]\n{v}" for k, v in sections.items() if v)
     if not info:
         return ""
 
-    script = _llm_complete(_SCRIPT_SYSTEM, info, temperature=0.7)
+    today = _cn_today()
+    weekday = "一二三四五六日"[today.weekday()]
+    date_info = f"[今天日期] {today.strftime('%Y年%m月%d日')}，星期{weekday}"
+    script = _llm_complete(_SCRIPT_SYSTEM, date_info + "\n\n" + info, temperature=0.7)
     if script:
         return script[:600]
 
     # 模板兜底（去板块标题行和尾部标点，口语化拼接）
     print("  ⚠️ 语音稿生成失败，使用模板")
-    date_str = datetime.date.today().strftime("%m月%d日")
+    date_str = today.strftime("%m月%d日")
     parts = [f"早上好，今天是{date_str}"]
     if sections.get("weather"):
         lines = [l for l in sections["weather"].split("\n") if l and not l.startswith("🌤")]
@@ -478,7 +496,7 @@ def _tts_to_mp3(script):
 
 def _prune_and_save(seen):
     """去重账本剪枝（只留 retention_days 内）+ 落盘。"""
-    today = datetime.date.today()
+    today = _cn_today()
     keep = datetime.timedelta(days=NEWS_CONFIG["news_retention_days"])
     pruned = {}
     for k, v in (seen or {}).items():
@@ -573,13 +591,13 @@ def step6_daily_digest():
         if _DEADLINE - time.monotonic() > _MIN_REMAINING:
             mp3_path = _tts_to_mp3(_build_script(sections))
             if mp3_path:
-                _send_telegram_audio(mp3_path, "每日速递 %s" % datetime.date.today().strftime("%Y-%m-%d"))
+                _send_telegram_audio(mp3_path, "每日速递 %s" % _cn_today().strftime("%Y-%m-%d"))
         else:
             print("  ⏰ 时间不足，跳过语音")
 
     # ---- 文字（_send_telegram_raw 负责分段；纯文本避免 Markdown 解析失败）----
     body = "\n\n".join(sections.values())
-    prefix = "📰 每日速递 %s" % datetime.date.today().strftime("%Y-%m-%d")
+    prefix = "📰 每日速递 %s" % _cn_today().strftime("%Y-%m-%d")
     _send_telegram_raw(body, parse_mode=None, prefix=prefix)
 
     # ---- 账本提交 ----

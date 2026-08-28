@@ -54,6 +54,8 @@ resources:
         DIDA_CLIENT_SECRET: ${env(DIDA_CLIENT_SECRET)}
         # 默认发送通道
         SEND_CHANNELS: telegram
+        # 容器时区（FC 默认 UTC，datetime.date.today() 依赖它，影响所有 step 的日期计算）
+        TZ: 'Asia/Shanghai'
         # 每日速递调优（均为可选，有代码默认值）
         TRENDING_N: '5'
         NEWS_MAX_ITEMS: '5'
